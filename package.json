@@ -1,0 +1,58 @@
+{
+  "name": "mimo-cli",
+  "version": "1.0.0",
+  "description": "Terminal AI coding assistant CLI powered by MiMo",
+  "main": "dist/index.js",
+  "bin": {
+    "mimo": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "npm run build && node --test test",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "mimo",
+    "terminal",
+    "assistant",
+    "xiaomi",
+    "coding",
+    "developer-tools",
+    "code-generation",
+    "chatbot"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "dependencies": {
+    "@types/blessed": "^0.1.27",
+    "blessed": "^0.1.81",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
+    "conf": "^10.2.0",
+    "diff": "^5.2.0",
+    "marked": "^9.1.6",
+    "marked-terminal": "^6.0.0",
+    "ora": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/diff": "^5.0.8",
+    "@types/marked-terminal": "^6.1.1",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}
