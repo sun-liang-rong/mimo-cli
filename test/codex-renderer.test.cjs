@@ -1,20 +1,36 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const renderer = require('../dist/ui/codex-renderer.js');
 
-test('formats chat roles without box drawing or emoji symbols', () => {
-  assert.equal(renderer.formatUserMessage('hello'), '\nuser\nhello');
-  assert.equal(renderer.formatAssistantMessage('hi'), '\nassistant\nhi');
-  assert.equal(renderer.formatToolCall('read_file', 'src/index.ts'), '  tool read_file src/index.ts');
-  assert.equal(renderer.formatToolResult('read_file', true), '  ok read_file');
+// 测试 theme 常量
+const theme = require('../dist/ui/theme.js');
+
+test('theme exports expected constants', () => {
+  assert.ok(theme.Colors);
+  assert.ok(theme.Icons);
+  assert.equal(typeof theme.Colors.user, 'string');
+  assert.equal(typeof theme.Icons.assistant, 'string');
 });
 
-test('status and prompt strings are ascii safe', () => {
-  const output = [
-    renderer.formatHeader({ model: 'mimo-v2.5-pro', permissionMode: 'default' }),
-    renderer.formatPrompt(),
-    renderer.formatThinking(),
-    renderer.formatToolResult('run_command', false),
-  ].join('\n');
-  assert.equal(/[^\x00-\x7F]/.test(output), false);
+test('theme icons are correct values', () => {
+  const { Icons } = theme;
+  assert.equal(Icons.user, 'user');
+  assert.equal(Icons.assistant, '●');
+  assert.equal(Icons.thinking, ':');
+  assert.equal(Icons.toolCall, '▸');
+  assert.equal(Icons.prompt, '> ');
+});
+
+// 测试 markdown 渲染
+const markdown = require('../dist/ui/markdown.js');
+
+test('markdown renderMarkdown returns string', () => {
+  const result = markdown.renderMarkdown('hello **world**');
+  assert.equal(typeof result, 'string');
+  assert.ok(result.length > 0);
+});
+
+test('markdown hasMarkdown detects markdown features', () => {
+  assert.equal(markdown.hasMarkdown('```js\ncode\n```'), true);
+  assert.equal(markdown.hasMarkdown('**bold**'), true);
+  assert.equal(markdown.hasMarkdown('plain text'), false);
 });

@@ -8,6 +8,14 @@ export interface StreamCallbacks {
   onToolCalls: (toolCalls: ToolCall[]) => void;
   onDone: (fullText: string, toolCalls?: ToolCall[], usage?: TokenUsage) => void;
   onError: (error: Error) => void;
+
+  // 新增细粒度回调 (可选，用于 TUI 流式渲染)
+  onThinkingStart?: () => void;
+  onThinkingContent?: (content: string) => void;
+  onThinkingEnd?: () => void;
+  onToolCallStart?: (name: string, args: Record<string, unknown>) => void;
+  onToolCallEnd?: (name: string, result: { success: boolean; output: string }) => void;
+  onStreamEnd?: (usage: TokenUsage) => void;
 }
 
 export interface TokenUsage {
@@ -134,6 +142,7 @@ export async function chatStream(
 
     let fullText = '';
     let reasoningText = '';
+    let reasoningStarted = false;
     const toolCalls: ToolCall[] = [];
     let usage: TokenUsage | undefined;
 
@@ -178,8 +187,13 @@ export async function chatStream(
 
           // 思考内容
           if (delta.reasoning_content) {
+            if (!reasoningStarted) {
+              reasoningStarted = true;
+              callbacks.onThinkingStart?.();
+            }
             reasoningText += delta.reasoning_content;
             callbacks.onThinking(delta.reasoning_content);
+            callbacks.onThinkingContent?.(delta.reasoning_content);
           }
 
           // 普通文本内容
@@ -217,6 +231,11 @@ export async function chatStream(
             }
             callbacks.onToolCalls(toolCalls);
           }
+          if (choice.finish_reason === 'stop' || choice.finish_reason === 'end_turn') {
+            if (reasoningStarted) {
+              callbacks.onThinkingEnd?.();
+            }
+          }
         } catch {
           // 忽略解析错误
         }
@@ -236,6 +255,11 @@ export async function chatStream(
         });
       }
       callbacks.onToolCalls(toolCalls);
+    }
+
+    // 细粒度回调: 流结束
+    if (usage) {
+      callbacks.onStreamEnd?.(usage);
     }
 
     callbacks.onDone(fullText, toolCalls.length > 0 ? toolCalls : undefined, usage);

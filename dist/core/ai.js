@@ -110,6 +110,7 @@ async function chatStream(messages, callbacks, tools) {
         }
         let fullText = '';
         let reasoningText = '';
+        let reasoningStarted = false;
         const toolCalls = [];
         let usage;
         // tool_calls 累积器（流式分片）
@@ -149,8 +150,13 @@ async function chatStream(messages, callbacks, tools) {
                         continue;
                     // 思考内容
                     if (delta.reasoning_content) {
+                        if (!reasoningStarted) {
+                            reasoningStarted = true;
+                            callbacks.onThinkingStart?.();
+                        }
                         reasoningText += delta.reasoning_content;
                         callbacks.onThinking(delta.reasoning_content);
+                        callbacks.onThinkingContent?.(delta.reasoning_content);
                     }
                     // 普通文本内容
                     if (delta.content) {
@@ -188,6 +194,11 @@ async function chatStream(messages, callbacks, tools) {
                         }
                         callbacks.onToolCalls(toolCalls);
                     }
+                    if (choice.finish_reason === 'stop' || choice.finish_reason === 'end_turn') {
+                        if (reasoningStarted) {
+                            callbacks.onThinkingEnd?.();
+                        }
+                    }
                 }
                 catch {
                     // 忽略解析错误
@@ -207,6 +218,10 @@ async function chatStream(messages, callbacks, tools) {
                 });
             }
             callbacks.onToolCalls(toolCalls);
+        }
+        // 细粒度回调: 流结束
+        if (usage) {
+            callbacks.onStreamEnd?.(usage);
         }
         callbacks.onDone(fullText, toolCalls.length > 0 ? toolCalls : undefined, usage);
     }

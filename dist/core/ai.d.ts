@@ -6,6 +6,15 @@ export interface StreamCallbacks {
     onToolCalls: (toolCalls: ToolCall[]) => void;
     onDone: (fullText: string, toolCalls?: ToolCall[], usage?: TokenUsage) => void;
     onError: (error: Error) => void;
+    onThinkingStart?: () => void;
+    onThinkingContent?: (content: string) => void;
+    onThinkingEnd?: () => void;
+    onToolCallStart?: (name: string, args: Record<string, unknown>) => void;
+    onToolCallEnd?: (name: string, result: {
+        success: boolean;
+        output: string;
+    }) => void;
+    onStreamEnd?: (usage: TokenUsage) => void;
 }
 export interface TokenUsage {
     prompt_tokens: number;
