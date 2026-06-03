@@ -58,7 +58,7 @@ export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskVi
   const hiddenCount = allSteps.length - visibleSteps.length
 
   return (
-    <Box flexDirection="column" marginY={1} width="100%">
+    <Box flexDirection="column" marginY={1}>
       {/* Status header */}
       <Box>
         {task.status === 'running' ? (
@@ -77,7 +77,7 @@ export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskVi
 
       {/* Tool calls (inline, no border) */}
       {visibleSteps.length > 0 && (
-        <Box flexDirection="column" marginTop={1} width="100%">
+        <Box flexDirection="column" marginTop={1} paddingLeft={2}>
           {visibleSteps.map(step => (
             <TaskStepView
               key={step.id}
@@ -88,7 +88,7 @@ export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskVi
           ))}
           {hiddenCount > 0 && (
             <Box marginTop={0}>
-              <Text color="cyan" dimColor wrap="wrap">
+              <Text color="cyan" dimColor>
                 {'  '}+{hiddenCount} earlier tool call{hiddenCount === 1 ? '' : 's'}{' '}
                 <Text color="gray" dimColor>(ctrl+o to expand)</Text>
               </Text>
@@ -99,20 +99,16 @@ export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskVi
 
       {/* Final text (completed) */}
       {task.status === 'completed' && task.finalText && (
-        <Box flexDirection="column" marginTop={1} width="100%">
-          <Box paddingLeft={2} width="100%">
-            <Markdown content={task.finalText} maxLines={20} />
-          </Box>
+        <Box flexDirection="column" marginTop={1} marginLeft={2}>
+          <Markdown content={task.finalText} maxLines={20} />
         </Box>
       )}
 
       {/* Streaming text (running) */}
       {task.streamingText && task.status === 'running' && (
-        <Box flexDirection="column" marginTop={1} width="100%">
-          <Box paddingLeft={2} width="100%">
-            <Markdown content={task.streamingText} maxLines={MAX_STREAMING_LINES} />
-          </Box>
-          <Text color="gray" dimColor>{'   ▌'}</Text>
+        <Box flexDirection="column" marginTop={1} marginLeft={2}>
+          <Markdown content={task.streamingText} maxLines={MAX_STREAMING_LINES} />
+          <Text color="gray" dimColor>▌</Text>
         </Box>
       )}
     </Box>

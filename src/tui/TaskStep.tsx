@@ -44,7 +44,6 @@ function ToolCallInline({ step, expanded, onToggle }: { step: TaskStep; expanded
 
   const header = (
     <Box>
-      <Text>{'  '}</Text>
       {isRunning ? <Spinner color={bulletColor} /> : <Text color={bulletColor}>●</Text>}
       <Text> </Text>
       <Text color={isError ? 'red' : isDenied ? 'yellow' : 'white'} wrap="wrap">
@@ -71,18 +70,18 @@ function ToolCallInline({ step, expanded, onToggle }: { step: TaskStep; expanded
   //   expanded: result on its own line + args
   if (expanded) {
     return (
-      <Box flexDirection="column" width="100%">
+      <Box flexDirection="column">
         {header}
-        <Box flexDirection="column" width="100%">
+        <Box paddingLeft={3} flexDirection="column">
           <Text color="gray" dimColor wrap="wrap">
-            {'     ⎿ '}{truncate(tool.result, 2000)}
+            ⎿ {truncate(tool.result, 2000)}
           </Text>
           {tool.args && Object.keys(tool.args).length > 0 && (
-            <Box flexDirection="column" width="100%">
-              <Text color="gray" dimColor>{'     ⎿ Input:'}</Text>
+            <Box flexDirection="column" marginTop={0}>
+              <Text color="gray" dimColor>⎿ Input:</Text>
               {Object.entries(tool.args).slice(0, 6).map(([key, value]) => (
                 <Text key={key} color="gray" dimColor wrap="wrap">
-                  {'       '}{key}: {truncate(String(value), 120)}
+                  {'  '}{key}: {truncate(String(value), 120)}
                 </Text>
               ))}
             </Box>
@@ -93,11 +92,13 @@ function ToolCallInline({ step, expanded, onToggle }: { step: TaskStep; expanded
   }
 
   return (
-    <Box flexDirection="column" width="100%">
+    <Box flexDirection="column">
       {header}
-      <Text color={isError ? 'red' : 'gray'} dimColor wrap="wrap">
-        {'     ⎿ '}{truncate(tool.result, 200)}
-      </Text>
+      <Box paddingLeft={3}>
+        <Text color={isError ? 'red' : 'gray'} dimColor wrap="wrap">
+          ⎿ {truncate(tool.result, 200)}
+        </Text>
+      </Box>
     </Box>
   )
 }

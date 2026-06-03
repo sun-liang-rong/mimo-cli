@@ -140,4 +140,32 @@ describe('AgentTaskView with long paths (regression for garbled output)', () => 
     // Earlier steps must be hidden in collapsed view.
     expect(out).not.toContain('file5.ts')
   })
+
+  it('renders a completed finalText with code block and CJK without mangling', () => {
+    const finalText = `我是 MiMo 基础模型: 特别针对文件操作支持中式输出。\n\n\`\`\`typescript\nconst config = {\n  model: 'MiMo-7B-RL',\n  baseURL: 'https://api.xiaomi/mimo.com/v1',\n  maxTokens: 4096,\n}\n\`\`\`\n\n灵感来源: Claude Code, 我能读取、写入、编辑文件，编程助手。`
+
+    const task = makeTask({ finalText })
+    const { lastFrame } = render(
+      <AgentTaskView
+        task={task}
+        expandedSteps={new Set()}
+        onToggleStep={() => {}}
+      />
+    )
+
+    const out = lastFrame() ?? ''
+    console.log('===FINALTEXT-RENDER-START===\n' + out + '\n===FINALTEXT-RENDER-END===')
+
+    // Key content must be present and not split into fragments.
+    expect(out).toContain('MiMo-7B-RL')
+    expect(out).toContain('baseURL')
+    expect(out).toContain('编程助手')
+    // The 'finalText' block must appear as a contiguous block, not interleaved
+    // with tool-call rows. Check that the order is: status, tool calls (if any),
+    // then finalText.
+    const statusIdx = out.indexOf('Done')
+    const finalIdx = out.indexOf('MiMo-7B-RL')
+    expect(statusIdx).toBeGreaterThanOrEqual(0)
+    expect(finalIdx).toBeGreaterThan(statusIdx)
+  })
 })
