@@ -1,56 +1,13 @@
-// Status bar - rich metrics display
+// 顶部状态栏 - Claude Code 风格: 单行极简, model · cwd · branch
 
 import React from 'react'
 import { Box, Text, useStdout } from 'ink'
-import type { AgentPhase } from './types.js'
 import path from 'path'
 
-interface StatusBarProps {
+export interface TopStatusBarProps {
   model: string
-  phase: AgentPhase | 'idle'
-  iteration: number
-  maxIterations: number
-  toolCallsTotal: number
-  toolCallsActive: number
-  tokenCount: number
-  duration: number
   workingDir: string
-  error?: string
-  approvalTool?: string
-}
-
-function phaseLabel(phase: AgentPhase | 'idle'): { text: string; color: string } {
-  switch (phase) {
-    case 'thinking':
-      return { text: 'Thinking', color: 'yellow' }
-    case 'streaming-text':
-      return { text: 'Streaming', color: 'green' }
-    case 'executing-tools':
-      return { text: 'Running', color: 'cyan' }
-    case 'awaiting-approval':
-      return { text: 'Awaiting', color: 'yellow' }
-    case 'planning':
-      return { text: 'Planning', color: 'blue' }
-    case 'completed':
-      return { text: 'Ready', color: 'green' }
-    case 'error':
-      return { text: 'Error', color: 'red' }
-    default:
-      return { text: 'Ready', color: 'green' }
-  }
-}
-
-function formatDuration(ms: number): string {
-  if (ms <= 0) return ''
-  const totalSeconds = Math.floor(ms / 1000)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`
-}
-
-function formatTokens(n: number): string {
-  if (n <= 0) return ''
-  return n.toLocaleString('en-US') + ' tok'
+  branch?: string
 }
 
 function shortenDir(dir: string, maxLen: number): string {
@@ -68,65 +25,37 @@ function shortenDir(dir: string, maxLen: number): string {
   return prefix + display.slice(-room) + path.sep + base
 }
 
-export function StatusBar({
-  model,
-  phase,
-  iteration,
-  maxIterations,
-  toolCallsTotal,
-  toolCallsActive,
-  tokenCount,
-  duration,
-  workingDir,
-}: StatusBarProps) {
+export function TopStatusBar({ model, workingDir, branch }: TopStatusBarProps) {
   const { stdout } = useStdout()
   const width = stdout.columns || 80
-  const { text: phaseText, color: phaseColor } = phaseLabel(phase)
-  const dir = shortenDir(workingDir, Math.max(20, Math.floor(width * 0.25)))
+  const dir = shortenDir(workingDir, Math.max(20, Math.floor(width * 0.4)))
 
   return (
     <Box
       borderStyle="single"
-      borderColor={phase === 'error' ? 'red' : 'gray'}
+      borderColor="gray"
+      borderBottom={false}
+      borderLeft={false}
+      borderRight={false}
+      borderTop={false}
       width="100%"
       paddingX={1}
       justifyContent="space-between"
     >
       <Box>
         <Text color="cyan" bold>{model}</Text>
-        <Text color="gray"> │ </Text>
-        <Text color={phaseColor}>● {phaseText}</Text>
-        {iteration > 0 && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="gray">Iter {iteration}/{maxIterations}</Text>
-          </>
-        )}
-        {toolCallsTotal > 0 && (
-          <>
-            <Text color="gray"> │ </Text>
-            <Text color="gray">{toolCallsTotal} tools</Text>
-            {toolCallsActive > 0 && (
-              <Text color="cyan"> ({toolCallsActive} active)</Text>
-            )}
-          </>
-        )}
+        <Text color="gray">  ·  </Text>
+        <Text color="gray">{dir}</Text>
       </Box>
-      <Box>
-        {tokenCount > 0 && (
-          <>
-            <Text color="gray" dimColor>{formatTokens(tokenCount)}</Text>
-            <Text color="gray"> │ </Text>
-          </>
-        )}
-        {duration > 0 && (
-          <>
-            <Text color="gray" dimColor>{formatDuration(duration)}</Text>
-            <Text color="gray"> │ </Text>
-          </>
-        )}
-        <Text color="gray" dimColor>{dir}</Text>
-      </Box>
+      {branch && (
+        <Box>
+          <Text color="gray">⎇ </Text>
+          <Text color="green">{branch}</Text>
+        </Box>
+      )}
     </Box>
   )
 }
+
+// Alias for legacy imports (StatusBar was renamed to TopStatusBar)
+export { TopStatusBar as StatusBar }

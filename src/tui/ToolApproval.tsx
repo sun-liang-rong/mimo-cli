@@ -1,4 +1,4 @@
-// 工具审批组件
+// 工具审批 - Claude Code 风格: 内联一行, 不使用大黄框
 
 import React from 'react'
 import { Box, Text, useInput } from 'ink'
@@ -29,36 +29,31 @@ export function ToolApproval({
   const preview = formatInputPreview(toolName, input)
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="double"
-      borderColor="yellow"
-      paddingX={1}
-      marginX={1}
-      marginBottom={1}
-    >
-      <Text bold color="yellow">
-        ⚠ Permission required
-      </Text>
-      <Box marginTop={1}>
+    <Box flexDirection="column" paddingX={1} marginY={1}>
+      <Box>
+        <Text color="yellow" bold>⚠ Permission requested</Text>
+      </Box>
+      <Box marginTop={0} paddingLeft={2}>
         <Text>
           Allow <Text bold color="cyan">{toolName}</Text>?
         </Text>
       </Box>
-      <Box marginTop={1} flexDirection="column">
-        <Text color="gray">Preview:</Text>
-        <Box paddingLeft={2} flexDirection="column">
-          {preview.split('\n').map((line, i) => (
-            <Text key={i} dimColor>
+      {preview && (
+        <Box marginTop={0} paddingLeft={2} flexDirection="column">
+          {preview.split('\n').slice(0, 6).map((line, i) => (
+            <Text key={i} color="gray" dimColor wrap="wrap">
               {line}
             </Text>
           ))}
         </Box>
-      </Box>
-      <Box marginTop={1}>
+      )}
+      <Box marginTop={0} paddingLeft={2}>
         <Text>
-          <Text bold color="green">Enter/Y</Text> allow ·{' '}
-          <Text bold color="red">Esc/N</Text> deny
+          <Text color="gray">  </Text>
+          <Text bold color="green" inverse> yes </Text>
+          <Text color="gray">  </Text>
+          <Text bold color="red" inverse> no </Text>
+          <Text color="gray">  (y/n)</Text>
         </Text>
       </Box>
     </Box>

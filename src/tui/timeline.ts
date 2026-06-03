@@ -137,6 +137,29 @@ export function completeTask(timeline: Timeline): Timeline {
   return { ...timeline, items }
 }
 
+/**
+ * Mark the most recent agent-task as completed and attach the given
+ * `finalText` to it. Used by session restore, which loads assistant
+ * messages from disk and needs to set their content as the task's
+ * final answer (the streaming text is not replayed).
+ */
+export function finalizeLastTask(timeline: Timeline, finalText: string): Timeline {
+  const items = [...timeline.items]
+  const lastIdx = items.length - 1
+  const last = items[lastIdx]
+  if (!last || last.type !== 'agent-task') return timeline
+  const now = Date.now()
+  items[lastIdx] = {
+    ...last,
+    status: 'completed',
+    phase: 'completed',
+    finalText,
+    completedAt: last.completedAt ?? now,
+    duration: last.duration ?? (now - last.startedAt),
+  }
+  return { ...timeline, items }
+}
+
 export function errorTask(timeline: Timeline, _error: string): Timeline {
   const items = [...timeline.items]
   const lastIdx = items.length - 1

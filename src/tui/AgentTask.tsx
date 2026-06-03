@@ -1,4 +1,6 @@
-import React from 'react'
+// Agent task 渲染 - Claude Code 风格: 无外框, 内联展示, 折叠旧 steps
+
+import React, { useState } from 'react'
 import { Box, Text } from 'ink'
 import type { AgentTaskItem } from './types.js'
 import { TaskStepView } from './TaskStep.js'
@@ -11,19 +13,25 @@ interface AgentTaskViewProps {
   onToggleStep: (stepId: string) => void
 }
 
+// Cap on the number of steps shown in full detail; the rest is collapsed
+// into a single "+N more tool calls" line. Matches Claude Code's behavior.
+const MAX_VISIBLE_STEPS = 8
+// Cap on the number of lines the streaming text block may occupy.
+const MAX_STREAMING_LINES = 6
+
 function statusLabel(status: AgentTaskItem['status'], phase: AgentTaskItem['phase']): { text: string; color: string } {
   switch (status) {
     case 'running': {
       switch (phase) {
-        case 'thinking': return { text: 'Thinking', color: 'yellow' }
-        case 'streaming-text': return { text: 'Streaming', color: 'green' }
-        case 'executing-tools': return { text: 'Running', color: 'cyan' }
-        case 'awaiting-approval': return { text: 'Awaiting', color: 'yellow' }
-        case 'planning': return { text: 'Planning', color: 'blue' }
-        default: return { text: 'Running', color: 'cyan' }
+        case 'thinking': return { text: 'MiMo is thinking…', color: 'yellow' }
+        case 'streaming-text': return { text: 'MiMo is responding…', color: 'green' }
+        case 'executing-tools': return { text: 'MiMo is running tools…', color: 'cyan' }
+        case 'awaiting-approval': return { text: 'Awaiting your approval…', color: 'yellow' }
+        case 'planning': return { text: 'Planning…', color: 'blue' }
+        default: return { text: 'Working…', color: 'cyan' }
       }
     }
-    case 'completed': return { text: 'Completed', color: 'green' }
+    case 'completed': return { text: 'Done', color: 'green' }
     case 'error': return { text: 'Error', color: 'red' }
     case 'cancelled': return { text: 'Cancelled', color: 'yellow' }
     default: return { text: 'Pending', color: 'gray' }
@@ -33,66 +41,78 @@ function statusLabel(status: AgentTaskItem['status'], phase: AgentTaskItem['phas
 function formatDuration(ms: number): string {
   if (ms <= 0) return ''
   const totalSeconds = Math.floor(ms / 1000)
+  if (totalSeconds < 60) return `${totalSeconds}s`
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
-  if (minutes > 0) return `${minutes}m ${seconds}s`
-  return `${seconds}s`
+  return `${minutes}m ${seconds}s`
 }
 
 export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskViewProps) {
   const { text: statusText, color: statusColor } = statusLabel(task.status, task.phase)
-  const elapsed = task.duration ?? (Date.now() - task.startedAt)
+  const elapsed = task.duration ?? (task.startedAt ? Date.now() - task.startedAt : 0)
+  const toolCount = task.steps.filter(s => s.type === 'tool-call').length
+  const [showAllSteps, setShowAllSteps] = useState(false)
+
+  const allSteps = task.steps
+  const visibleSteps = showAllSteps ? allSteps : allSteps.slice(-MAX_VISIBLE_STEPS)
+  const hiddenCount = allSteps.length - visibleSteps.length
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={task.status === 'error' ? 'red' : task.status === 'running' ? 'cyan' : 'gray'}
-      paddingX={1}
-      marginY={1}
-    >
-      {/* Header */}
+    <Box flexDirection="column" marginY={1} width="100%">
+      {/* Status header */}
       <Box>
-        {task.status === 'running'
-          ? <Spinner color={statusColor} />
-          : <Text color={statusColor}>{'●'}</Text>
-        }
-        <Text color={statusColor} bold> {statusText}</Text>
-        {task.iterationCount > 0 && (
-          <Text color="gray"> · Iter {task.iterationCount}/{task.maxIterations}</Text>
+        {task.status === 'running' ? (
+          <Spinner color={statusColor} />
+        ) : (
+          <Text color={statusColor}>{task.status === 'completed' ? '✓' : task.status === 'error' ? '✗' : '·'}</Text>
         )}
-        {elapsed > 0 && (
-          <Text color="gray" dimColor> · {formatDuration(elapsed)}</Text>
+        <Text color={statusColor}> {statusText}</Text>
+        {task.status === 'completed' && toolCount > 0 && (
+          <Text color="gray" dimColor>
+            {' · '}{toolCount} tool call{toolCount === 1 ? '' : 's'}
+            {elapsed > 0 && ` · ${formatDuration(elapsed)}`}
+          </Text>
         )}
       </Box>
 
-      {/* Steps */}
-      {task.steps.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          {task.steps.map(step => (
-            <Box key={step.id} paddingLeft={1}>
-              <TaskStepView
-                step={step}
-                expanded={expandedSteps.has(step.id)}
-                onToggle={() => onToggleStep(step.id)}
-              />
-            </Box>
+      {/* Tool calls (inline, no border) */}
+      {visibleSteps.length > 0 && (
+        <Box flexDirection="column" marginTop={1} width="100%">
+          {visibleSteps.map(step => (
+            <TaskStepView
+              key={step.id}
+              step={step}
+              expanded={expandedSteps.has(step.id)}
+              onToggle={() => onToggleStep(step.id)}
+            />
           ))}
+          {hiddenCount > 0 && (
+            <Box marginTop={0}>
+              <Text color="cyan" dimColor wrap="wrap">
+                {'  '}+{hiddenCount} earlier tool call{hiddenCount === 1 ? '' : 's'}{' '}
+                <Text color="gray" dimColor>(ctrl+o to expand)</Text>
+              </Text>
+            </Box>
+          )}
         </Box>
       )}
 
-      {/* Streaming text */}
-      {task.streamingText && (
-        <Box flexDirection="column" marginTop={1}>
-          <Markdown content={task.streamingText} />
-          {task.status === 'running' && <Text color="gray" dimColor>{'▌'}</Text>}
+      {/* Final text (completed) */}
+      {task.status === 'completed' && task.finalText && (
+        <Box flexDirection="column" marginTop={1} width="100%">
+          <Box paddingLeft={2} width="100%">
+            <Markdown content={task.finalText} maxLines={20} />
+          </Box>
         </Box>
       )}
 
-      {/* Final text (if different from streaming) */}
-      {task.finalText && task.finalText !== task.streamingText && (
-        <Box flexDirection="column" marginTop={1}>
-          <Markdown content={task.finalText} />
+      {/* Streaming text (running) */}
+      {task.streamingText && task.status === 'running' && (
+        <Box flexDirection="column" marginTop={1} width="100%">
+          <Box paddingLeft={2} width="100%">
+            <Markdown content={task.streamingText} maxLines={MAX_STREAMING_LINES} />
+          </Box>
+          <Text color="gray" dimColor>{'   ▌'}</Text>
         </Box>
       )}
     </Box>

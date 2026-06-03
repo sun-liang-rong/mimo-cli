@@ -1,7 +1,7 @@
 // 用户输入 - Claude Code 风格：多行、历史、快捷键
 
 import React, { useState, useCallback } from 'react'
-import { Box, Text, useInput, useStdout } from 'ink'
+import { Box, Text, useInput } from 'ink'
 
 interface UserInputProps {
   onSubmit: (text: string) => void
@@ -20,8 +20,6 @@ export function UserInput({
   onToggleShortcuts,
   onCancel,
 }: UserInputProps) {
-  const { stdout } = useStdout()
-  const width = stdout.columns || 80
   const [lines, setLines] = useState<string[]>([''])
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
@@ -140,50 +138,42 @@ export function UserInput({
       {showShortcuts && (
         <Box
           flexDirection="column"
-          borderStyle="round"
+          borderStyle="single"
           borderColor="gray"
           paddingX={1}
           marginBottom={1}
         >
-          <Text bold color="yellow">
-            Shortcuts
-          </Text>
-          <Text color="gray"> Enter       Send message</Text>
-          <Text color="gray"> Shift+Enter New line</Text>
-          <Text color="gray"> ↑ / ↓       Command history</Text>
-          <Text color="gray"> Esc         Cancel current request</Text>
-          <Text color="gray"> /help       Show commands</Text>
-          <Text color="gray"> /clear      Clear conversation</Text>
-          <Text color="gray"> ?           Toggle this panel</Text>
+          <Text bold color="yellow">Keyboard shortcuts</Text>
+          <Text color="gray">  Enter         Send message</Text>
+          <Text color="gray">  Shift+Enter   New line</Text>
+          <Text color="gray">  ↑ / ↓         Navigate history</Text>
+          <Text color="gray">  Esc           Cancel current request</Text>
+          <Text color="gray">  Ctrl+C        Exit (or cancel if running)</Text>
+          <Text color="gray">  /             Open command palette</Text>
         </Box>
       )}
 
-      <Box>
-        <Text color="gray">{'─'.repeat(Math.min(width - 2, 100))}</Text>
-      </Box>
-
-      <Box paddingX={1} flexDirection="column">
+      <Box flexDirection="column" paddingX={1}>
         {lines.map((line, i) => (
           <Box key={i}>
             <Text color="cyan" bold>
-              {'❯ '}
+              {'› '}
             </Text>
             {line ? (
               <>
-                <Text>{line}</Text>
+                <Text wrap="wrap">{line}</Text>
                 {i === currentLine && !disabled && (
                   <Text color="cyan">▌</Text>
                 )}
               </>
             ) : i === currentLine && !disabled ? (
               <>
-                <Text color="cyan">▌</Text>
-                {showPlaceholder && line === '' && (
-                  <Text color="gray" dimColor>
-                    {' '}
-                    Ask MiMo anything… (? for shortcuts)
+                {showPlaceholder && line === '' ? (
+                  <Text color="gray" dimColor wrap="wrap">
+                    Try "fix the failing test" or "refactor this file"…
                   </Text>
-                )}
+                ) : null}
+                <Text color="cyan">▌</Text>
               </>
             ) : null}
           </Box>
@@ -192,14 +182,10 @@ export function UserInput({
         {disabled && (
           <Box marginTop={0}>
             <Text color="gray" dimColor>
-              Esc to cancel · waiting for MiMo…
+              {text || 'MiMo is working…'} <Text color="cyan">esc to interrupt</Text>
             </Text>
           </Box>
         )}
-      </Box>
-
-      <Box>
-        <Text color="gray">{'─'.repeat(Math.min(width - 2, 100))}</Text>
       </Box>
     </Box>
   )

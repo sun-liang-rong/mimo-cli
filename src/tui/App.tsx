@@ -1,4 +1,5 @@
 // MiMo CLI - Agent Workbench (Timeline architecture)
+// Claude Code style: minimal top bar, chat-style middle, single-line input at bottom.
 
 import React, { useState, useCallback, useRef, useEffect } from 'react'
 import { Box, useApp, useInput, useStdout } from 'ink'
@@ -23,11 +24,11 @@ import {
   updateTaskPhase,
   appendStreamingText,
   completeTask,
+  finalizeLastTask,
   errorTask,
   getActiveTask,
-  getTaskMetrics,
 } from './timeline.js'
-import type { Timeline, TaskStep, AgentPhase } from './types.js'
+import type { Timeline, TaskStep } from './types.js'
 
 interface AppProps {
   config: Config
@@ -47,8 +48,83 @@ function formatToolSummary(name: string, args: Record<string, unknown>): string 
     case 'Bash': return String(args.command || '').slice(0, 60)
     case 'Glob': return String(args.pattern || '')
     case 'Grep': return `${args.pattern || ''} in ${args.path || '.'}`
+    case 'Git': return `${args.git_command || args.command || ''} ${args.args || ''}`.trim()
     default: return JSON.stringify(args).slice(0, 60)
   }
+}
+
+/**
+ * Rebuild a Timeline from persisted session messages.
+ * Walks messages in order, emitting user/agent-task items with steps
+ * annotated by the matching tool result messages.
+ */
+function restoreTimelineFromMessages(messages: Message[]): Timeline {
+  let timeline = createTimeline()
+
+  for (const msg of messages) {
+    if (msg.role === 'user') {
+      timeline = addUserMessage(timeline, msg.content || '')
+      continue
+    }
+
+    if (msg.role === 'assistant') {
+      const hasTools = !!(msg.tool_calls && msg.tool_calls.length > 0)
+      const hasText = !!msg.content
+
+      if (hasTools) {
+        timeline = createAgentTask(timeline, 50)
+        for (const tc of msg.tool_calls!) {
+          let args: Record<string, unknown> = {}
+          try { args = JSON.parse(tc.function.arguments) } catch { args = {} }
+          const summary = formatToolSummary(tc.function.name, args)
+          const step: TaskStep = {
+            id: `step-${tc.id}`,
+            type: 'tool-call',
+            status: 'completed',
+            label: `${tc.function.name} ${summary}`,
+            startedAt: 0,
+            completedAt: 0,
+            toolCall: {
+              id: tc.id,
+              name: tc.function.name,
+              args,
+              summary,
+            },
+          }
+          timeline = addStep(timeline, step)
+        }
+      } else if (hasText) {
+        // Either finalize the most recent task with this text, or
+        // create a new completed task for a free-form assistant turn.
+        const last = timeline.items[timeline.items.length - 1]
+        if (last && last.type === 'agent-task') {
+          timeline = finalizeLastTask(timeline, msg.content!)
+        } else {
+          timeline = createAgentTask(timeline, 50)
+          timeline = finalizeLastTask(timeline, msg.content!)
+        }
+      }
+      continue
+    }
+
+    if (msg.role === 'tool' && msg.tool_call_id) {
+      const stepId = `step-${msg.tool_call_id}`
+      const content = msg.content || ''
+      const isError = content.startsWith('Error:') || content.toLowerCase().includes('permission denied')
+      timeline = updateStep(timeline, stepId, {
+        toolCall: {
+          id: msg.tool_call_id,
+          name: msg.name || 'tool',
+          args: {},
+          summary: isError ? 'Failed' : 'Done',
+          result: content.slice(0, 500),
+          success: !isError,
+        },
+      })
+    }
+  }
+
+  return timeline
 }
 
 export function App({ config }: AppProps) {
@@ -83,7 +159,7 @@ export function App({ config }: AppProps) {
     return () => clearInterval(timer)
   }, [taskStartTime])
 
-  // Initialize
+  // Initialize agent + session
   useEffect(() => {
     agentRef.current = new AgentLoop(config, buildSystemPrompt())
     const initSession = async () => {
@@ -91,6 +167,7 @@ export function App({ config }: AppProps) {
       const latest = await store.getLatest()
       if (latest && latest.messages.length > 0) {
         sessionRef.current = latest
+        setTimeline(restoreTimelineFromMessages(latest.messages))
         setShowWelcome(false)
       } else {
         sessionRef.current = await store.create(config.model || 'MiMo-7B-RL')
@@ -304,12 +381,18 @@ export function App({ config }: AppProps) {
   const busy = taskStartTime > 0
   const inputDisabled = busy || !!approval
   const activeTask = getActiveTask(timeline)
-  const metrics = getTaskMetrics(timeline)
-  const currentPhase: AgentPhase | 'idle' = activeTask?.phase ?? 'idle'
-  const duration = taskStartTime ? now - taskStartTime : 0
 
   return (
     <Box flexDirection="column" height={stdout.rows}>
+      {/* Top bar: model · cwd (Claude Code style, minimal) */}
+      <Box flexShrink={0}>
+        <StatusBar
+          model={config.model || 'MiMo'}
+          workingDir={process.cwd()}
+        />
+      </Box>
+
+      {/* Middle: chat history */}
       <Box flexDirection="column" flexGrow={1} overflow="hidden">
         {showWelcome && timeline.items.length === 0 ? (
           <Welcome
@@ -325,6 +408,7 @@ export function App({ config }: AppProps) {
         )}
       </Box>
 
+      {/* Bottom: approval prompt (if any) + user input */}
       <Box flexDirection="column" flexShrink={0}>
         {approval && (
           <ToolApproval
@@ -341,20 +425,6 @@ export function App({ config }: AppProps) {
           showShortcuts={showShortcuts}
           onToggleShortcuts={() => setShowShortcuts((s) => !s)}
           onCancel={handleCancel}
-        />
-      </Box>
-
-      <Box flexShrink={0}>
-        <StatusBar
-          model={config.model || 'MiMo'}
-          phase={approval ? 'awaiting-approval' : currentPhase}
-          iteration={activeTask?.iterationCount ?? 0}
-          maxIterations={50}
-          toolCallsTotal={metrics.toolCalls}
-          toolCallsActive={activeTask?.steps.filter(s => s.status === 'running').length ?? 0}
-          tokenCount={tokenCount}
-          duration={duration}
-          workingDir={process.cwd()}
         />
       </Box>
     </Box>

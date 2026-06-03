@@ -6,9 +6,10 @@ import { highlight } from 'cli-highlight'
 
 interface MarkdownProps {
   content: string
+  maxLines?: number
 }
 
-export function Markdown({ content }: MarkdownProps) {
+export function Markdown({ content, maxLines }: MarkdownProps) {
   const lines = content.split('\n')
   const rendered: React.ReactNode[] = []
 
@@ -183,7 +184,19 @@ export function Markdown({ content }: MarkdownProps) {
     )
   }
 
-  return <>{rendered}</>
+  // Apply maxLines truncation (cap rendered output to N top-level children)
+  let final = rendered
+  if (maxLines != null && maxLines > 0 && rendered.length > maxLines) {
+    const truncated = rendered.slice(0, maxLines)
+    truncated.push(
+      <Text key="__truncated" color="gray" dimColor>
+        … (truncated, {rendered.length - maxLines} more line{rendered.length - maxLines === 1 ? '' : 's'})
+      </Text>
+    )
+    final = truncated
+  }
+
+  return <>{final}</>
 }
 
 function renderInline(text: string): React.ReactNode {

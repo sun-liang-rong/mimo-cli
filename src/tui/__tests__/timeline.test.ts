@@ -10,6 +10,7 @@ import {
   appendStreamingText,
   incrementIteration,
   completeTask,
+  finalizeLastTask,
   errorTask,
   cancelTask,
   getActiveTask,
@@ -181,6 +182,38 @@ describe('completeTask', () => {
     expect(task.finalText).toBe('Done!')
     expect(task.completedAt).toBeDefined()
     expect(task.duration).toBeDefined()
+  })
+})
+
+describe('finalizeLastTask', () => {
+  it('should finalize the last running task with final text', () => {
+    let timeline = createTimeline()
+    timeline = createAgentTask(timeline, 50)
+    timeline = finalizeLastTask(timeline, 'Hello world')
+    const task = timeline.items[0] as AgentTaskItem
+    expect(task.status).toBe('completed')
+    expect(task.phase).toBe('completed')
+    expect(task.finalText).toBe('Hello world')
+    expect(task.completedAt).toBeDefined()
+  })
+
+  it('should be idempotent on an already-completed task', () => {
+    let timeline = createTimeline()
+    timeline = createAgentTask(timeline, 50)
+    timeline = completeTask(timeline)
+    const before = timeline.items[0] as AgentTaskItem
+    timeline = finalizeLastTask(timeline, 'overwritten')
+    const after = timeline.items[0] as AgentTaskItem
+    // Should not change the existing completion
+    expect(after.completedAt).toBe(before.completedAt)
+  })
+
+  it('should be a no-op if the last item is not an agent task', () => {
+    let timeline = createTimeline()
+    timeline = addUserMessage(timeline, 'hi')
+    const before = timeline
+    timeline = finalizeLastTask(timeline, 'text')
+    expect(timeline).toBe(before)
   })
 })
 
