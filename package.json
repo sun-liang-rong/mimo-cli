@@ -1,58 +1,43 @@
 {
   "name": "mimo-cli",
-  "version": "1.0.0",
-  "description": "Terminal AI coding assistant CLI powered by MiMo",
-  "main": "dist/index.js",
+  "version": "0.1.0",
+  "description": "A terminal AI coding assistant powered by MiMo, inspired by Claude Code",
+  "type": "module",
   "bin": {
-    "mimo": "dist/index.js"
+    "mimo": "./dist/index.js"
   },
-  "files": [
-    "dist"
-  ],
+  "main": "./dist/index.js",
   "scripts": {
+    "dev": "npx tsx src/index.ts",
     "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "npm run build && node --test test",
     "start": "node dist/index.js",
-    "prepublishOnly": "npm run build",
-    "clean": "rm -rf dist"
+    "mimo": "npx tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "cli",
     "ai",
     "mimo",
-    "terminal",
-    "assistant",
-    "xiaomi",
-    "coding",
-    "developer-tools",
-    "code-generation",
-    "chatbot"
+    "coding-assistant"
   ],
   "author": "",
   "license": "MIT",
-  "engines": {
-    "node": ">=16.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": ""
-  },
   "dependencies": {
-    "@types/blessed": "^0.1.27",
-    "blessed": "^0.1.81",
-    "chalk": "^4.1.2",
+    "chalk": "^5.6.2",
+    "cli-highlight": "^2.1.11",
     "commander": "^12.1.0",
-    "conf": "^10.2.0",
-    "diff": "^5.2.0",
-    "marked": "^9.1.6",
-    "marked-terminal": "^6.0.0",
-    "ora": "^5.4.1"
+    "fast-glob": "^3.3.3",
+    "ink": "^4.4.1",
+    "openai": "^4.104.0",
+    "ora": "^7.0.1",
+    "react": "^18.3.1"
   },
   "devDependencies": {
-    "@types/diff": "^5.0.8",
-    "@types/marked-terminal": "^6.1.1",
-    "@types/node": "^20.11.0",
-    "typescript": "^5.3.3"
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.45",
+    "ink-testing-library": "^4.0.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.6.0"
   }
 }

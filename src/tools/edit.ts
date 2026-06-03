@@ -1,200 +1,75 @@
-import fs from 'fs';
-import path from 'path';
-import { checkPathSafety } from '../utils/safety';
-import { toolRegistry, ToolDefinition, ToolResult } from './registry';
+// Edit 工具 - 精确编辑文件（old_string -> new_string）
 
-// ── Types ──
+import fs from 'fs/promises'
+import path from 'path'
+import type { ToolDefinition } from './types.js'
+import { createUnifiedDiff, formatDiffPlainText } from './diff.js'
 
-export interface EditArgs {
-  path: string;
-  old_string: string;
-  new_string: string;
-}
-
-// ── Tool Definition ──
-
-const editDef: ToolDefinition = {
-  name: 'edit',
-  description: 'Edit a file by replacing old_string with new_string. old_string must match exactly; include context for uniqueness.',
-  permission: 'write',
-  parameters: {
+export const editTool: ToolDefinition = {
+  name: 'Edit',
+  description:
+    'Make a targeted edit to an existing file by replacing an exact string match with new content. ' +
+    'The old_string must match exactly (including whitespace and indentation). ' +
+    'Use this for surgical edits to avoid rewriting entire files.',
+  input_schema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'File path' },
-      old_string: { type: 'string', description: 'Text to replace (must match exactly, include context for uniqueness)' },
-      new_string: { type: 'string', description: 'Replacement text' },
+      file_path: {
+        type: 'string',
+        description: 'The absolute or relative path to the file to edit',
+      },
+      old_string: {
+        type: 'string',
+        description: 'The exact string to find and replace (must match exactly)',
+      },
+      new_string: {
+        type: 'string',
+        description: 'The string to replace old_string with',
+      },
     },
-    required: ['path', 'old_string', 'new_string'],
+    required: ['file_path', 'old_string', 'new_string'],
   },
-};
+  requiresApproval: true,
+  async execute(input) {
+    try {
+      const filePath = path.resolve(input.file_path)
+      const content = await fs.readFile(filePath, 'utf-8')
 
-// ── Levenshtein Distance ──
+      if (!content.includes(input.old_string)) {
+        return {
+          success: false,
+          output: '',
+          error: 'old_string not found in the file. Make sure it matches exactly.',
+        }
+      }
 
-/**
- * Calculate the Levenshtein distance between two strings.
- * Returns the minimum number of single-character edits (insertions, deletions, substitutions)
- * required to change one string into the other.
- */
-export function levenshteinDistance(a: string, b: string): number {
-  const m = a.length;
-  const n = b.length;
+      // 检查是否有多处匹配
+      const count = content.split(input.old_string).length - 1
+      if (count > 1) {
+        return {
+          success: false,
+          output: '',
+          error: `Found ${count} matches of old_string. Please provide a more unique string to match.`,
+        }
+      }
 
-  if (m === 0) return n;
-  if (n === 0) return m;
+      const newContent = content.replace(input.old_string, input.new_string)
+      await fs.writeFile(filePath, newContent, 'utf-8')
 
-  // Use two rows instead of full matrix to reduce memory usage
-  let prev: number[] = new Array(n + 1);
-  let curr: number[] = new Array(n + 1);
+      // 生成 diff 预览
+      const diff = createUnifiedDiff(input.old_string, input.new_string, path.basename(filePath))
+      const diffText = formatDiffPlainText(diff)
 
-  for (let j = 0; j <= n; j++) {
-    prev[j] = j;
-  }
-
-  for (let i = 1; i <= m; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(
-        curr[j - 1] + 1,      // insertion
-        prev[j] + 1,        // deletion
-        prev[j - 1] + cost, // substitution
-      );
-    }
-    [prev, curr] = [curr, prev];
-  }
-
-  return prev[n];
-}
-
-// ── Fuzzy Find ──
-
-/**
- * Calculate similarity between two strings using Levenshtein distance.
- * Returns a value between 0 and 1, where 1 means identical.
- */
-function similarity(a: string, b: string): number {
-  if (a === b) return 1;
-  if (a.length === 0 || b.length === 0) return 0;
-
-  const distance = levenshteinDistance(a, b);
-  const maxLen = Math.max(a.length, b.length);
-  return 1 - distance / maxLen;
-}
-
-/**
- * Find the best fuzzy match for `target` within `content`.
- * Returns the start index of the match, or -1 if no suitable match is found.
- */
-export function fuzzyFind(content: string, target: string): number {
-  // Try exact match first
-  const exactIndex = content.indexOf(target);
-  if (exactIndex !== -1) {
-    return exactIndex;
-  }
-
-  // Try trimmed match
-  const trimmedTarget = target.trim();
-  if (trimmedTarget !== target) {
-    const trimmedIndex = content.indexOf(trimmedTarget);
-    if (trimmedIndex !== -1) {
-      return trimmedIndex;
-    }
-  }
-
-  // Fuzzy matching with Levenshtein distance
-  // Use a sliding window approach
-  const targetLen = target.length;
-  const contentLen = content.length;
-
-  if (targetLen === 0 || contentLen === 0) return -1;
-
-  // Limit search window to reasonable bounds
-  const windowSize = Math.min(targetLen + 20, contentLen);
-  const threshold = 0.8;
-
-  let bestIndex = -1;
-  let bestScore = 0;
-
-  for (let i = 0; i <= contentLen - windowSize; i++) {
-    const window = content.slice(i, i + windowSize);
-    const score = similarity(window, target);
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestIndex = i;
-    }
-  }
-
-  // Also try with trimmed target for fuzzy match
-  if (trimmedTarget !== target && trimmedTarget.length > 0) {
-    const trimmedWindowSize = Math.min(trimmedTarget.length + 20, contentLen);
-    for (let i = 0; i <= contentLen - trimmedWindowSize; i++) {
-      const window = content.slice(i, i + trimmedWindowSize);
-      const score = similarity(window, trimmedTarget);
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestIndex = i;
+      return {
+        success: true,
+        output: `File edited successfully: ${filePath}\n\n${diffText}`,
+      }
+    } catch (error: any) {
+      return {
+        success: false,
+        output: '',
+        error: `Failed to edit file: ${error.message}`,
       }
     }
-  }
-
-  if (bestScore >= threshold) {
-    return bestIndex;
-  }
-
-  return -1;
-}
-
-// ── Handler ──
-
-export function handleEdit(args: Record<string, unknown>): ToolResult {
-  const filePath = String(args.path);
-  const oldString = String(args.old_string);
-  const newString = String(args.new_string);
-  const resolved = path.resolve(filePath);
-
-  // Check path safety
-  const safetyError = checkPathSafety(resolved);
-  if (safetyError) {
-    return { success: false, output: '', error: safetyError };
-  }
-
-  // Check file exists
-  if (!fs.existsSync(resolved)) {
-    return { success: false, output: '', error: `文件不存在: ${resolved}` };
-  }
-
-  try {
-    const content = fs.readFileSync(resolved, 'utf-8');
-
-    // Try exact match first
-    let matchIndex = content.indexOf(oldString);
-
-    // Fall back to fuzzy match
-    if (matchIndex === -1) {
-      matchIndex = fuzzyFind(content, oldString);
-    }
-
-    if (matchIndex === -1) {
-      return { success: false, output: '', error: `未找到要替换的文本，请确保 old_string 精确匹配文件内容` };
-    }
-
-    // Perform replacement
-    const before = content.slice(0, matchIndex);
-    const after = content.slice(matchIndex + oldString.length);
-    const updated = before + newString + after;
-
-    fs.writeFileSync(resolved, updated, 'utf-8');
-    return { success: true, output: `文件已编辑: ${resolved}` };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { success: false, output: '', error: `编辑失败: ${msg}` };
-  }
-}
-
-// ── Registration ──
-
-export function registerEditTool(): void {
-  toolRegistry.register(editDef, handleEdit);
+  },
 }

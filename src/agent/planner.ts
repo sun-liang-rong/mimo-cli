@@ -1,84 +1,147 @@
-import { chatStream } from '../core/ai';
-import { ContextManager } from '../core/context';
+// Agent 规划器 - 任务拆解 → 执行计划 → 逐步验证
 
-export interface TaskPlan {
-  goal: string;
-  steps: Array<{
-    id: number;
-    description: string;
-    tool: string;
-    expectedOutput: string;
-    confirmBefore: boolean;
-  }>;
-  estimatedRounds: number;
+export interface PlanStep {
+  id: number
+  description: string
+  status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'skipped'
+  toolCalls: string[]
+  result?: string
+  error?: string
 }
 
-export interface PlanResult {
-  success: boolean;
-  plan?: TaskPlan;
-  error?: string;
+export interface ExecutionPlan {
+  goal: string
+  steps: PlanStep[]
+  currentStep: number
+  createdAt: string
+  updatedAt: string
 }
 
-const PLAN_SYSTEM_PROMPT = `You are a task planning assistant. Break down the user's programming task into clear steps.
+export class Planner {
+  private plan: ExecutionPlan | null = null
 
-Return JSON format:
-{
-  "steps": [
-    {
-      "description": "what to do",
-      "tool": "tool name (view, edit, run_command, etc.)",
-      "expectedOutput": "expected result",
-      "confirmBefore": true/false
+  /** 从用户消息创建执行计划 */
+  createPlan(goal: string, steps: Array<{ description: string; tools?: string[] }>): ExecutionPlan {
+    this.plan = {
+      goal,
+      steps: steps.map((s, i) => ({
+        id: i + 1,
+        description: s.description,
+        status: 'pending',
+        toolCalls: s.tools || [],
+      })),
+      currentStep: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     }
-  ],
-  "estimatedRounds": number
-}`;
+    return this.plan
+  }
 
-export async function decomposeTask(task: string): Promise<PlanResult> {
-  const planMessages = [
-    { role: 'system' as const, content: PLAN_SYSTEM_PROMPT },
-    { role: 'user' as const, content: `Break down this task into steps:\n\n${task}` },
-  ];
+  /** 从模型响应中解析计划 */
+  parsePlanFromResponse(response: string): ExecutionPlan | null {
+    // 尝试解析 markdown 格式的计划
+    const steps: Array<{ description: string; tools?: string[] }> = []
+    const lines = response.split('\n')
 
-  return new Promise((resolve) => {
-    let planText = '';
+    for (const line of lines) {
+      // 匹配编号列表: 1. xxx, 1) xxx, - xxx
+      const match = line.match(/^\s*(?:\d+[.)]\s*|[-*]\s+)(.+)/)
+      if (match) {
+        steps.push({ description: match[1].trim() })
+      }
+    }
 
-    chatStream(planMessages, {
-      onToken: (token) => { planText += token; },
-      onThinking: () => {},
-      onToolCalls: () => {},
-      onDone: (fullText) => {
-        try {
-          const plan = parsePlan(fullText || planText);
-          resolve({ success: true, plan });
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          resolve({ success: false, error: `Failed to parse plan: ${msg}` });
-        }
-      },
-      onError: (error) => {
-        resolve({ success: false, error: error.message });
-      },
-    });
-  });
-}
+    if (steps.length === 0) return null
+    return this.createPlan('Execute plan', steps)
+  }
 
-function parsePlan(text: string): TaskPlan {
-  const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
-  const jsonText = jsonMatch ? jsonMatch[1] : text;
-  const parsed = JSON.parse(jsonText);
+  /** 获取当前步骤 */
+  getCurrentStep(): PlanStep | null {
+    if (!this.plan) return null
+    return this.plan.steps[this.plan.currentStep] || null
+  }
 
-  const steps = (parsed.steps || []).map((s: any, i: number) => ({
-    id: i + 1,
-    description: String(s.description || ''),
-    tool: String(s.tool || ''),
-    expectedOutput: String(s.expectedOutput || ''),
-    confirmBefore: Boolean(s.confirmBefore),
-  }));
+  /** 标记当前步骤完成 */
+  completeCurrentStep(result?: string): void {
+    if (!this.plan) return
+    const step = this.plan.steps[this.plan.currentStep]
+    if (step) {
+      step.status = 'completed'
+      step.result = result
+      this.plan.currentStep++
+      this.plan.updatedAt = new Date().toISOString()
+    }
+  }
 
-  return {
-    goal: parsed.goal || '',
-    steps,
-    estimatedRounds: Number(parsed.estimatedRounds) || steps.length,
-  };
+  /** 标记当前步骤失败 */
+  failCurrentStep(error: string): void {
+    if (!this.plan) return
+    const step = this.plan.steps[this.plan.currentStep]
+    if (step) {
+      step.status = 'failed'
+      step.error = error
+      this.plan.updatedAt = new Date().toISOString()
+    }
+  }
+
+  /** 跳过当前步骤 */
+  skipCurrentStep(): void {
+    if (!this.plan) return
+    const step = this.plan.steps[this.plan.currentStep]
+    if (step) {
+      step.status = 'skipped'
+      this.plan.currentStep++
+      this.plan.updatedAt = new Date().toISOString()
+    }
+  }
+
+  /** 检查是否有更多步骤 */
+  hasMoreSteps(): boolean {
+    if (!this.plan) return false
+    return this.plan.currentStep < this.plan.steps.length
+  }
+
+  /** 获取计划进度 */
+  getProgress(): { completed: number; total: number; percentage: number } {
+    if (!this.plan) return { completed: 0, total: 0, percentage: 0 }
+    const completed = this.plan.steps.filter(s => s.status === 'completed').length
+    return {
+      completed,
+      total: this.plan.steps.length,
+      percentage: Math.round((completed / this.plan.steps.length) * 100),
+    }
+  }
+
+  /** 获取当前计划 */
+  getPlan(): ExecutionPlan | null {
+    return this.plan
+  }
+
+  /** 格式化计划为可读文本 */
+  formatPlan(): string {
+    if (!this.plan) return 'No active plan'
+
+    const lines = [`Plan: ${this.plan.goal}`, '']
+    for (const step of this.plan.steps) {
+      let icon = '○'
+      if (step.status === 'completed') icon = '✓'
+      else if (step.status === 'failed') icon = '✗'
+      else if (step.status === 'in_progress') icon = '►'
+      else if (step.status === 'skipped') icon = '⊘'
+
+      lines.push(`  ${icon} ${step.id}. ${step.description}`)
+      if (step.result) lines.push(`     → ${step.result.slice(0, 100)}`)
+      if (step.error) lines.push(`     ✗ ${step.error.slice(0, 100)}`)
+    }
+
+    const progress = this.getProgress()
+    lines.push('', `Progress: ${progress.completed}/${progress.total} (${progress.percentage}%)`)
+
+    return lines.join('\n')
+  }
+
+  /** 重置规划器 */
+  reset(): void {
+    this.plan = null
+  }
 }

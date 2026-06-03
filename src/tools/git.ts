@@ -1,157 +1,188 @@
-import { execSync } from 'child_process';
-import { toolRegistry, ToolDefinition, ToolResult } from './registry';
+// Git 工具 - 专用 Git 操作 (status/diff/commit/branch/log)
 
-// ── 工具定义 ──
+import { exec } from 'child_process'
+import type { ToolDefinition } from './types.js'
 
-const gitStatusDef: ToolDefinition = {
-  name: 'git_status',
-  description: '查看当前 Git 仓库状态（分支、变更文件列表）',
-  permission: 'read',
-  parameters: {
-    type: 'object',
-    properties: {},
-    required: [],
-  },
-};
+function runGit(args: string, cwd?: string): Promise<{ stdout: string; stderr: string; code: number }> {
+  return new Promise((resolve) => {
+    exec(
+      `git ${args}`,
+      { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, cwd: cwd || process.cwd() },
+      (error, stdout, stderr) => {
+        resolve({
+          stdout: stdout || '',
+          stderr: stderr || '',
+          code: error ? (error as any).code || 1 : 0,
+        })
+      }
+    )
+  })
+}
 
-const gitDiffDef: ToolDefinition = {
-  name: 'git_diff',
-  description: '查看 Git 工作区或暂存区的代码差异',
-  permission: 'read',
-  parameters: {
-    type: 'object',
-    properties: {
-      file: { type: 'string', description: '指定文件路径（可选，默认查看所有变更）' },
-      staged: { type: 'string', description: '是否查看暂存区（true/false），默认 false' },
-    },
-    required: [],
-  },
-};
-
-const gitCommitDef: ToolDefinition = {
-  name: 'git_commit',
-  description: '创建 Git 提交（自动 git add 并 commit）',
-  permission: 'write',
-  parameters: {
+export const gitTool: ToolDefinition = {
+  name: 'Git',
+  description:
+    'Perform git operations: status, diff, commit, branch, log, show, add, restore. ' +
+    'Use this instead of Bash for git commands. Supports subcommands: ' +
+    'status (working tree status), diff (unstaged/staged changes), ' +
+    'branch (list/create/switch branches), log (commit history), ' +
+    'commit (create commit with message), add (stage files), ' +
+    'restore (discard changes), show (show commit details).',
+  input_schema: {
     type: 'object',
     properties: {
-      message: { type: 'string', description: 'Commit message' },
-      files: { type: 'string', description: '要提交的文件（空格分隔），默认全部' },
+      subcommand: {
+        type: 'string',
+        enum: ['status', 'diff', 'branch', 'log', 'commit', 'add', 'restore', 'show'],
+        description: 'The git subcommand to execute',
+      },
+      args: {
+        type: 'string',
+        description: 'Additional arguments for the subcommand (e.g., file paths, branch names, commit messages)',
+      },
+      cwd: {
+        type: 'string',
+        description: 'Working directory for the git command',
+      },
     },
-    required: ['message'],
+    required: ['subcommand'],
   },
-};
+  requiresApproval: false,
+  async execute(input) {
+    const subcommand = input.subcommand
+    const extraArgs = input.args || ''
+    const cwd = input.cwd
 
-const gitLogDef: ToolDefinition = {
-  name: 'git_log',
-  description: '查看最近的 Git 提交历史',
-  permission: 'read',
-  parameters: {
-    type: 'object',
-    properties: {
-      count: { type: 'string', description: '显示的提交数量，默认 10' },
-    },
-    required: [],
+    try {
+      switch (subcommand) {
+        case 'status': {
+          const result = await runGit('status --short --branch', cwd)
+          return {
+            success: true,
+            output: result.stdout || 'Working tree clean',
+          }
+        }
+
+        case 'diff': {
+          const result = await runGit(`diff ${extraArgs}`, cwd)
+          if (!result.stdout.trim()) {
+            const staged = await runGit('diff --cached', cwd)
+            return {
+              success: true,
+              output: staged.stdout || 'No changes',
+            }
+          }
+          return {
+            success: true,
+            output: result.stdout,
+          }
+        }
+
+        case 'branch': {
+          if (extraArgs.startsWith('-c ') || extraArgs.startsWith('-b ')) {
+            // 创建分支
+            const result = await runGit(`branch ${extraArgs}`, cwd)
+            return {
+              success: result.code === 0,
+              output: result.stdout || result.stderr,
+              error: result.code !== 0 ? result.stderr : undefined,
+            }
+          }
+          if (extraArgs.startsWith('checkout ') || extraArgs.startsWith('switch ')) {
+            const result = await runGit(extraArgs.startsWith('checkout') ? extraArgs : `switch ${extraArgs.slice(7)}`, cwd)
+            return {
+              success: result.code === 0,
+              output: result.stdout || result.stderr,
+              error: result.code !== 0 ? result.stderr : undefined,
+            }
+          }
+          const result = await runGit('branch -a', cwd)
+          return {
+            success: true,
+            output: result.stdout || 'No branches',
+          }
+        }
+
+        case 'log': {
+          const format = extraArgs || '--oneline -20'
+          const result = await runGit(`log ${format}`, cwd)
+          return {
+            success: true,
+            output: result.stdout || 'No commits',
+          }
+        }
+
+        case 'commit': {
+          if (!extraArgs) {
+            return {
+              success: false,
+              output: '',
+              error: 'Commit message is required. Use args: "-m \\"message\\""',
+            }
+          }
+          const result = await runGit(`commit ${extraArgs}`, cwd)
+          return {
+            success: result.code === 0,
+            output: result.stdout || result.stderr,
+            error: result.code !== 0 ? result.stderr : undefined,
+          }
+        }
+
+        case 'add': {
+          if (!extraArgs) {
+            return {
+              success: false,
+              output: '',
+              error: 'File paths are required. Use args: "." or specific paths',
+            }
+          }
+          const result = await runGit(`add ${extraArgs}`, cwd)
+          return {
+            success: result.code === 0,
+            output: result.stdout || `Staged: ${extraArgs}`,
+            error: result.code !== 0 ? result.stderr : undefined,
+          }
+        }
+
+        case 'restore': {
+          if (!extraArgs) {
+            return {
+              success: false,
+              output: '',
+              error: 'File paths are required. Use args: "." or specific paths',
+            }
+          }
+          const result = await runGit(`restore ${extraArgs}`, cwd)
+          return {
+            success: result.code === 0,
+            output: result.stdout || `Restored: ${extraArgs}`,
+            error: result.code !== 0 ? result.stderr : undefined,
+          }
+        }
+
+        case 'show': {
+          const target = extraArgs || 'HEAD'
+          const result = await runGit(`show ${target}`, cwd)
+          return {
+            success: result.code === 0,
+            output: result.stdout || result.stderr,
+            error: result.code !== 0 ? result.stderr : undefined,
+          }
+        }
+
+        default:
+          return {
+            success: false,
+            output: '',
+            error: `Unknown git subcommand: ${subcommand}. Supported: status, diff, branch, log, commit, add, restore, show`,
+          }
+      }
+    } catch (error: any) {
+      return {
+        success: false,
+        output: '',
+        error: `Git command failed: ${error.message}`,
+      }
+    }
   },
-};
-
-// ── 工具实现 ──
-
-function runGit(args: string[]): string {
-  try {
-    return execSync(`git ${args.join(' ')}`, {
-      encoding: 'utf-8',
-      timeout: 10000,
-      windowsHide: true,
-    }).trim();
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(msg);
-  }
-}
-
-function isGitRepo(): boolean {
-  try {
-    runGit(['rev-parse', '--is-inside-work-tree']);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function handleGitStatus(): ToolResult {
-  if (!isGitRepo()) {
-    return { success: false, output: '', error: '当前目录不是 Git 仓库' };
-  }
-
-  try {
-    const branch = runGit(['branch', '--show-current']);
-    const status = runGit(['status', '--short']);
-    const output = [`Branch: ${branch}`, '', status || '(工作区干净)'].join('\n');
-    return { success: true, output };
-  } catch (err: unknown) {
-    return { success: false, output: '', error: String(err) };
-  }
-}
-
-function handleGitDiff(args: Record<string, unknown>): ToolResult {
-  if (!isGitRepo()) {
-    return { success: false, output: '', error: '当前目录不是 Git 仓库' };
-  }
-
-  const file = args.file ? String(args.file) : '';
-  const staged = String(args.staged || 'false') === 'true';
-
-  try {
-    const cmd = ['diff'];
-    if (staged) cmd.push('--cached');
-    if (file) cmd.push(file);
-    const output = runGit(cmd);
-    return { success: true, output: output || '(无差异)' };
-  } catch (err: unknown) {
-    return { success: false, output: '', error: String(err) };
-  }
-}
-
-function handleGitCommit(args: Record<string, unknown>): ToolResult {
-  if (!isGitRepo()) {
-    return { success: false, output: '', error: '当前目录不是 Git 仓库' };
-  }
-
-  const message = String(args.message);
-  const files = args.files ? String(args.files) : '.';
-
-  try {
-    runGit(['add', files]);
-    const output = runGit(['commit', '-m', message]);
-    return { success: true, output };
-  } catch (err: unknown) {
-    return { success: false, output: '', error: String(err) };
-  }
-}
-
-function handleGitLog(args: Record<string, unknown>): ToolResult {
-  if (!isGitRepo()) {
-    return { success: false, output: '', error: '当前目录不是 Git 仓库' };
-  }
-
-  const count = String(args.count || '10');
-
-  try {
-    const output = runGit([
-      'log', `--oneline`, `-n`, count,
-    ]);
-    return { success: true, output: output || '(无提交记录)' };
-  } catch (err: unknown) {
-    return { success: false, output: '', error: String(err) };
-  }
-}
-
-// ── 注册 ──
-
-export function registerGitTools(): void {
-  toolRegistry.register(gitStatusDef, handleGitStatus);
-  toolRegistry.register(gitDiffDef, handleGitDiff);
-  toolRegistry.register(gitCommitDef, handleGitCommit);
-  toolRegistry.register(gitLogDef, handleGitLog);
 }

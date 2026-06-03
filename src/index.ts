@@ -1,67 +1,119 @@
 #!/usr/bin/env node
 
-import { Command } from 'commander';
-import chalk from 'chalk';
-import { registerConfigCommand } from './commands/config';
-import { startChat } from './commands/chat';
-import { fetchModels } from './core/ai';
-import { get } from './core/config';
-import { log } from './utils/logger';
-import { createSpinner } from './utils/spinner';
+// MiMo CLI - 终端 AI 编程助手
+// 类似 Claude Code，接入小米 MiMo 大模型
 
-const program = new Command();
+import { program } from 'commander'
+import React from 'react'
+import { render } from 'ink'
+import { App } from './tui/App.js'
+import { Setup } from './tui/Setup.js'
+import {
+  loadConfig,
+  saveConfig,
+  isConfigComplete,
+  getConfigPath,
+} from './config/store.js'
+import type { Config } from './config/store.js'
 
 program
   .name('mimo')
-  .description('MiMo CLI - terminal AI coding assistant powered by MiMo')
-  .version('1.0.0', '-v, --version', 'show version');
+  .description('AI coding assistant powered by MiMo')
+  .version('0.1.0')
+  .option('-k, --api-key <key>', 'MiMo API key (or set MIMO_API_KEY env)')
+  .option('-u, --base-url <url>', 'API base URL (or set MIMO_BASE_URL env)')
+  .option('-m, --model <model>', 'Model name (or set MIMO_MODEL env)')
+  .option('-p, --print <prompt>', 'Single-shot mode: print response and exit')
+  .option('--setup', 'Re-run setup wizard')
+  .action(async (options) => {
+    // 加载已有配置（文件 + 环境变量）
+    let config = await loadConfig()
 
-// 注册 config 子命令
-registerConfigCommand(program);
+    // 命令行参数覆盖
+    if (options.apiKey) config.apiKey = options.apiKey
+    if (options.baseUrl) config.baseURL = options.baseUrl
+    if (options.model) config.model = options.model
 
-// mimo models —— 查看可用模型列表
-program
-  .command('models')
-  .description('list available API models')
-  .action(async () => {
-    const current = get('model');
-    const spinner = createSpinner('Fetching models...');
-    spinner.start();
-
-    const result = await fetchModels();
-    spinner.stop();
-
-    if (!result.success) {
-      log.error(result.error!);
-      return;
+    // 如果指定了 --setup 或配置不完整，进入配置引导
+    if (options.setup || !isConfigComplete(config)) {
+      config = await runSetup(config)
     }
 
-    console.log('');
-    console.log(chalk.cyan.bold('  Available models:'));
-    console.log('');
-    for (const m of result.models!) {
-      const marker = m === current ? chalk.green('  * ') : '    ';
-      const name = m === current ? chalk.green.bold(m) : m;
-      console.log(`${marker}${name}`);
+    // Headless 模式 (单次输出)
+    if (options.print) {
+      await runHeadless(config, options.print)
+      return
     }
-    console.log('');
-    log.info(`Current model: ${chalk.green.bold(current)}`);
-    log.dim('Switch model: mimo config set model <model>');
-    console.log('');
-  });
 
-// 默认命令：进入交互式对话
-program
-  .action(async () => {
-    await startChat();
-  });
+    // 交互式 REPL 模式 - 启用备用屏幕缓冲区，避免终端滚动历史累积
+    process.stdout.write('\x1b[?1049h')
+    process.on('exit', () => {
+      process.stdout.write('\x1b[?1049l')
+    })
+    const app = render(React.createElement(App, { config }))
 
-// 也支持 mimo chat 显式调用
-program
-  .command('chat')
-  .description('start interactive chat')
-  .action(async () => {
-    await startChat();
-  });
+    app.waitUntilExit().then(() => {
+      process.stdout.write('\x1b[?1049l')
+      process.exit(0)
+    })
+  })
 
-program.parse();
+/**
+ * 运行配置引导
+ */
+async function runSetup(initialConfig: Config): Promise<Config> {
+  return new Promise<Config>((resolve, reject) => {
+    const app = render(
+      React.createElement(Setup, {
+        initialConfig,
+        onComplete: async (config: Config) => {
+          // 保存配置
+          await saveConfig(config)
+          app.unmount()
+          // 打印成功信息
+          console.log(`\n✅ 配置已保存到 ${getConfigPath()}\n`)
+          resolve(config)
+        },
+        onCancel: () => {
+          app.unmount()
+          console.log('\n已取消配置。')
+          process.exit(0)
+        },
+      })
+    )
+  })
+}
+
+/**
+ * Headless 模式 - 单次输出
+ */
+async function runHeadless(config: Config, prompt: string) {
+  const { AgentLoop } = await import('./agent/loop.js')
+
+  try {
+    const systemPrompt = `You are MiMo CLI, an AI coding assistant. Be concise and direct.`
+    const agent = new AgentLoop(config, systemPrompt)
+
+    await agent.sendMessage(prompt, [], {
+      onText: (text: string) => {
+        process.stdout.write(text)
+      },
+      onToolCall: (_toolCall, _args) => {},
+      onToolResult: (_id, _name, _result, _success) => {},
+      onError: (error: string) => {
+        process.stderr.write(`Error: ${error}\n`)
+      },
+      onDone: () => {},
+      onThinking: () => {},
+      requestApproval: async () => false,
+    })
+
+    process.stdout.write('\n')
+  } catch (error: any) {
+    process.stderr.write(`Error: ${error.message}\n`)
+    process.exit(1)
+  }
+}
+
+// 解析命令行参数
+program.parse()

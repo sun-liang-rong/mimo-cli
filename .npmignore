@@ -1,8 +1,0 @@
-src/
-doc.md
-tsconfig.json
-node_modules/
-.git/
-.vscode/
-*.map
-dist/
