@@ -94,6 +94,14 @@ export class MiMoClient {
         const delta = chunk.choices[0]?.delta
         if (!delta) continue
 
+        // 处理 reasoning_content (MiMo 模型的思考过程)
+        // 默认不显示思考过程，只显示最终的 content
+        // 如果需要显示思考过程，可以设置环境变量 SHOW_REASONING=1
+        const showReasoning = process.env.SHOW_REASONING === '1'
+        if (showReasoning && (delta as any).reasoning_content) {
+          yield { type: 'text', content: (delta as any).reasoning_content }
+        }
+        
         if (delta.content) {
           yield { type: 'text', content: delta.content }
         }

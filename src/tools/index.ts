@@ -8,6 +8,8 @@ import { bashTool } from './bash.js'
 import { globTool } from './glob.js'
 import { grepTool } from './grep.js'
 import { gitTool } from './git.js'
+import { webSearchTool } from './web-search.js'
+import { webFetchTool } from './web-fetch.js'
 
 // 所有内置工具
 const BUILTIN_TOOLS: ToolDefinition[] = [
@@ -18,14 +20,22 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
   globTool,
   grepTool,
   gitTool,
+  webSearchTool,
+  webFetchTool,
 ]
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map()
+  private allowedTools: Set<string> | null = null
 
-  constructor() {
+  constructor(allowedTools?: string[]) {
     for (const tool of BUILTIN_TOOLS) {
       this.tools.set(tool.name, tool)
+    }
+    
+    // 如果指定了允许的工具列表
+    if (allowedTools && allowedTools.length > 0) {
+      this.allowedTools = new Set(allowedTools)
     }
   }
 
@@ -40,7 +50,14 @@ export class ToolRegistry {
       parameters: Record<string, any>
     }
   }> {
-    return Array.from(this.tools.values()).map((tool) => ({
+    const tools = Array.from(this.tools.values())
+    
+    // 如果有白名单，过滤工具
+    const filteredTools = this.allowedTools
+      ? tools.filter(t => this.allowedTools!.has(t.name))
+      : tools
+    
+    return filteredTools.map((tool) => ({
       type: 'function' as const,
       function: {
         name: tool.name,
@@ -54,7 +71,14 @@ export class ToolRegistry {
    * 根据名称获取工具
    */
   getTool(name: string): ToolDefinition | undefined {
-    return this.tools.get(name)
+    const tool = this.tools.get(name)
+    
+    // 检查白名单
+    if (tool && this.allowedTools && !this.allowedTools.has(name)) {
+      return undefined
+    }
+    
+    return tool
   }
 
   /**
@@ -64,12 +88,12 @@ export class ToolRegistry {
     name: string,
     input: Record<string, any>
   ): Promise<{ success: boolean; output: string; error?: string }> {
-    const tool = this.tools.get(name)
+    const tool = this.getTool(name)
     if (!tool) {
       return {
         success: false,
         output: '',
-        error: `Unknown tool: ${name}`,
+        error: `Unknown tool: ${name}${this.allowedTools ? ' (not in allowed list)' : ''}`,
       }
     }
     return tool.execute(input)
@@ -87,7 +111,25 @@ export class ToolRegistry {
    * 获取所有工具名称
    */
   getToolNames(): string[] {
-    return Array.from(this.tools.keys())
+    const tools = Array.from(this.tools.keys())
+    return this.allowedTools
+      ? tools.filter(n => this.allowedTools!.has(n))
+      : tools
+  }
+
+  /**
+   * 检查工具是否被允许
+   */
+  isToolAllowed(name: string): boolean {
+    if (!this.allowedTools) return true
+    return this.allowedTools.has(name)
+  }
+
+  /**
+   * 获取允许的工具列表
+   */
+  getAllowedTools(): string[] | null {
+    return this.allowedTools ? Array.from(this.allowedTools) : null
   }
 }
 

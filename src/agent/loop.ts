@@ -1,4 +1,4 @@
-// Agent Loop - 核心对话循环 (集成 context 管理、重试、最大迭代保护)
+// Agent Loop - 核心对话循环 (集成 context 管理、重试、最大迭代保护、成本追踪、Hook 系统)
 
 import { MiMoClient } from '../api/client.js'
 import { ToolRegistry } from '../tools/index.js'
@@ -7,6 +7,9 @@ import { withRetry } from '../api/retry.js'
 import type { Message, ToolCall } from '../api/types.js'
 import type { MiMoConfig } from '../api/types.js'
 import { AgentEventEmitter } from '../tui/events.js'
+import { CostTracker } from '../cost/tracker.js'
+import { loadHooks, executePreToolHooks, executePostToolHooks } from '../hooks/manager.js'
+import type { HookConfig } from '../hooks/manager.js'
 import fs from 'fs'
 
 export interface AgentCallbacks {
@@ -34,6 +37,7 @@ export interface AgentLoopConfig {
   maxContextTokens: number
   maxToolResultChars: number
   maxRetries: number
+  allowedTools?: string[]
 }
 
 const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
@@ -51,6 +55,8 @@ export class AgentLoop {
   private config: AgentLoopConfig
   private cancelled = false
   private eventEmitter = new AgentEventEmitter()
+  private costTracker: CostTracker
+  private hooks: HookConfig[] = []
 
   constructor(
     config: Partial<MiMoConfig>,
@@ -58,12 +64,24 @@ export class AgentLoop {
     loopConfig: Partial<AgentLoopConfig> = {}
   ) {
     this.client = new MiMoClient(config)
-    this.tools = new ToolRegistry()
+    this.tools = new ToolRegistry(loopConfig.allowedTools)
     this.systemPrompt = systemPrompt
     this.config = { ...DEFAULT_LOOP_CONFIG, ...loopConfig }
     this.contextManager = new ContextManager({
       maxContextTokens: this.config.maxContextTokens,
     })
+    this.costTracker = new CostTracker(config.model || 'MiMo-7B-RL')
+    
+    // 异步加载钩子
+    this.loadHooksAsync()
+  }
+
+  private async loadHooksAsync(): Promise<void> {
+    try {
+      this.hooks = await loadHooks()
+    } catch {
+      // 忽略加载错误
+    }
   }
 
   cancel(): void {
@@ -77,6 +95,14 @@ export class AgentLoop {
 
   getEventEmitter(): AgentEventEmitter {
     return this.eventEmitter
+  }
+
+  getCostTracker(): CostTracker {
+    return this.costTracker
+  }
+
+  getToolRegistry(): ToolRegistry {
+    return this.tools
   }
 
   async sendMessage(
@@ -149,7 +175,7 @@ You can continue by sending a new message to continue the task from where it lef
         let hasToolCalls = false
 
         // API 调用带重试
-        const events: Array<{ type: string; content?: string; tool_call?: ToolCall; error?: string }> = []
+        const events: Array<{ type: string; content?: string; tool_call?: ToolCall; error?: string; usage?: any }> = []
         if (_dbg) fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] calling streamChat, msgs=${currentMessages.length}, tools=${toolDefs.length}\n`)
         await withRetry(
           async () => {
@@ -210,6 +236,10 @@ You can continue by sending a new message to continue the task from where it lef
               return newMessages
 
             case 'done':
+              // 追踪 token 使用（如果有）
+              if (event.usage) {
+                this.costTracker.trackFromResponse({ usage: event.usage })
+              }
               break
           }
         }
@@ -252,6 +282,26 @@ You can continue by sending a new message to continue the task from where it lef
           try { args = JSON.parse(toolCall.function.arguments) } catch { args = {} }
 
           const toolName = toolCall.function.name
+          
+          // 执行 pre-tool 钩子
+          const preResult = await executePreToolHooks(toolName, args, this.hooks)
+          if (!preResult.continue) {
+            const denyMsg: Message = {
+              role: 'tool',
+              content: `Hook blocked: ${preResult.error}`,
+              tool_call_id: toolCall.id,
+              name: toolName,
+            }
+            newMessages.push(denyMsg)
+            callbacks.onToolResult(toolCall.id, toolName, `Hook blocked: ${preResult.error}`, false)
+            continue
+          }
+          
+          // 使用修改后的输入
+          if (preResult.modifiedInput) {
+            args = preResult.modifiedInput
+          }
+
           const approved = await callbacks.requestApproval(toolName, args)
           if (!approved) {
             const denyMsg: Message = {
@@ -268,6 +318,20 @@ You can continue by sending a new message to continue the task from where it lef
 
           const result = await this.tools.executeTool(toolName, args)
           let resultContent = result.success ? result.output : `Error: ${result.error}`
+          
+          // 执行 post-tool 钩子
+          const postResult = await executePostToolHooks(
+            toolName,
+            args,
+            resultContent,
+            result.success,
+            this.hooks
+          )
+          
+          if (postResult.modifiedOutput) {
+            resultContent = postResult.modifiedOutput
+          }
+          
           resultContent = this.contextManager.truncateToolResult(resultContent, this.config.maxToolResultChars)
 
           newMessages.push({ role: 'tool', content: resultContent, tool_call_id: toolCall.id, name: toolName })
@@ -285,9 +349,40 @@ You can continue by sending a new message to continue the task from where it lef
               try { args = JSON.parse(toolCall.function.arguments) } catch { args = {} }
 
               const toolName = toolCall.function.name
+              
+              // 执行 pre-tool 钩子
+              const preResult = await executePreToolHooks(toolName, args, this.hooks)
+              if (!preResult.continue) {
+                return {
+                  toolCall,
+                  toolName,
+                  resultContent: `Hook blocked: ${preResult.error}`,
+                  success: false,
+                }
+              }
+              
+              // 使用修改后的输入
+              if (preResult.modifiedInput) {
+                args = preResult.modifiedInput
+              }
+
               callbacks.onToolCall(toolCall, args)
               const result = await this.tools.executeTool(toolName, args)
               let resultContent = result.success ? result.output : `Error: ${result.error}`
+              
+              // 执行 post-tool 钩子
+              const postResult = await executePostToolHooks(
+                toolName,
+                args,
+                resultContent,
+                result.success,
+                this.hooks
+              )
+              
+              if (postResult.modifiedOutput) {
+                resultContent = postResult.modifiedOutput
+              }
+              
               resultContent = this.contextManager.truncateToolResult(resultContent, this.config.maxToolResultChars)
 
               return { toolCall, toolName, resultContent, success: result.success }

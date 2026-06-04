@@ -5,99 +5,99 @@ export interface SlashCommandResult {
   message?: string
 }
 
-export function handleSlashCommand(input: string): SlashCommandResult {
-  const trimmed = input.trim()
+/**
+ * 处理斜杠命令
+ */
+export function handleSlashCommand(text: string): SlashCommandResult {
+  const trimmed = text.trim()
+  
+  // 检查是否是斜杠命令
   if (!trimmed.startsWith('/')) {
     return { handled: false }
   }
 
-  const tokens = trimmed.slice(1).split(/\s+/)
-  const command = (tokens[0] || '').toLowerCase()
-  const rest = tokens.slice(1).join(' ').trim()
-  const arg = rest
+  const [command, ...args] = trimmed.split(/\s+/)
+  const commandLower = command.toLowerCase()
 
-  switch (command) {
-    case 'help':
-    case 'h':
-    case '?':
-      return {
-        handled: true,
-        message: `Available commands:
-  /help, /h, /?  Show this help
-  /clear         Clear conversation history
-  /exit, /quit   Exit MiMo CLI
-  /model         Show current model and API endpoint
-  /status        Show session metrics (tokens, tool calls, duration)
-  /compact       Summarize the current conversation to free context
-  /vim           Toggle vim-style input editing
-  /mcp           List configured MCP servers
-  /init          Create or update the project memory file
-  /memory        Open or edit persistent memory
-  /setup         Re-run configuration wizard (restart required)`,
-      }
-
-    case 'clear':
-    case 'reset':
+  switch (commandLower) {
+    // 会话管理
+    case '/clear':
       return { handled: true, message: '__CLEAR__' }
-
-    case 'exit':
-    case 'quit':
-    case 'q':
+    
+    case '/exit':
+    case '/quit':
+    case '/q':
       return { handled: true, message: '__EXIT__' }
-
-    case 'model':
+    
+    case '/model':
       return { handled: true, message: '__MODEL__' }
-
-    case 'status':
-      return { handled: true, message: '__STATUS__' }
-
-    case 'compact':
-      return {
-        handled: true,
-        message: 'Compaction is not yet implemented. (/compact is a stub for parity with Claude Code.)',
+    
+    // 成本和上下文
+    case '/cost':
+      return { handled: true, message: '__COST__' }
+    
+    case '/context':
+      return { handled: true, message: '__CONTEXT__' }
+    
+    case '/compact':
+      return { handled: true, message: '__COMPACT__' }
+    
+    // 会话恢复
+    case '/session': {
+      const subCommand = args[0] || 'list'
+      if (subCommand === 'list') {
+        return { handled: true, message: '__SESSIONS__' }
       }
-
-    case 'vim':
-      return {
-        handled: true,
-        message: 'Vim mode is not yet implemented. (/vim is a stub for parity with Claude Code.)',
+      if (subCommand === 'resume' && args[1]) {
+        return { handled: true, message: `__RESUME__${args[1]}` }
       }
-
-    case 'mcp':
-      return {
-        handled: true,
-        message: 'No MCP servers configured. (/mcp is a stub for parity with Claude Code.)',
+      if (subCommand === 'clear') {
+        return { handled: true, message: '__SESSIONS__' }
       }
-
-    case 'init':
-      return {
-        handled: true,
-        message: 'Project memory initialization is not yet implemented. (/init is a stub for parity with Claude Code.)',
-      }
-
-    case 'memory':
-      return {
-        handled: true,
-        message: 'Persistent memory editor is not yet implemented. (/memory is a stub for parity with Claude Code.)',
-      }
-
-    case 'setup':
-      return {
-        handled: true,
-        message:
-          'Run `mimo --setup` from your shell to reconfigure API settings.',
-      }
-
+      return { handled: true, message: 'Usage: /session [list|resume <id>|delete <id>|clear]' }
+    }
+    
+    // 项目上下文
+    case '/init':
+      return { handled: true, message: '__INIT__' }
+    
+    case '/memory':
+      return { handled: true, message: '__MEMORY__' }
+    
+    // 子代理
+    case '/agents':
+      return { handled: true, message: '__AGENTS__' }
+    
+    // 帮助
+    case '/help':
+    case '/h':
+    case '/?':
+      return { handled: true, message: '__HELP__' }
+    
+    // 未知命令
     default:
-      if (arg) {
-        return {
-          handled: true,
-          message: `Unknown command: /${command}. Type /help for available commands.`,
-        }
-      }
-      return {
-        handled: true,
-        message: `Unknown command: /${command}. Type /help for available commands.`,
+      return { 
+        handled: true, 
+        message: `Unknown command: ${command}\nType /help for available commands.` 
       }
   }
+}
+
+/**
+ * 获取所有可用命令的描述
+ */
+export function getCommandDescriptions(): Array<{ command: string; description: string }> {
+  return [
+    { command: '/clear', description: 'Clear conversation history' },
+    { command: '/compact', description: 'Compress conversation context' },
+    { command: '/context', description: 'Show context window usage' },
+    { command: '/cost', description: 'Show cost breakdown' },
+    { command: '/exit', description: 'Exit MiMo CLI' },
+    { command: '/help', description: 'Show help message' },
+    { command: '/init', description: 'Create MIMO.md template' },
+    { command: '/memory', description: 'Show project memory info' },
+    { command: '/model', description: 'Show current model info' },
+    { command: '/agents', description: 'List available sub-agents' },
+    { command: '/session', description: 'Manage sessions (list/resume/delete/clear)' },
+  ]
 }

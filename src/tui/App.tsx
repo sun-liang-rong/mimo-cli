@@ -29,9 +29,16 @@ import {
   getActiveTask,
 } from './timeline.js'
 import type { Timeline, TaskStep } from './types.js'
+import { CostTracker } from '../cost/tracker.js'
+import { loadProjectContext, getProjectContextSummary } from '../context/project.js'
+import { compressMessages, needsCompression } from '../context/compression.js'
+import { loadSubAgents, findSubAgent, executeSubAgent } from '../agents/manager.js'
+import type { SubAgentConfig } from '../agents/manager.js'
 
 interface AppProps {
   config: Config
+  projectContext?: string
+  initialSession?: SessionData
 }
 
 type ApprovalRequest = {
@@ -49,14 +56,14 @@ function formatToolSummary(name: string, args: Record<string, unknown>): string 
     case 'Glob': return String(args.pattern || '')
     case 'Grep': return `${args.pattern || ''} in ${args.path || '.'}`
     case 'Git': return `${args.git_command || args.command || ''} ${args.args || ''}`.trim()
+    case 'WebSearch': return String(args.query || '').slice(0, 60)
+    case 'WebFetch': return String(args.url || '').slice(0, 60)
     default: return JSON.stringify(args).slice(0, 60)
   }
 }
 
 /**
  * Rebuild a Timeline from persisted session messages.
- * Walks messages in order, emitting user/agent-task items with steps
- * annotated by the matching tool result messages.
  */
 function restoreTimelineFromMessages(messages: Message[]): Timeline {
   let timeline = createTimeline()
@@ -94,8 +101,6 @@ function restoreTimelineFromMessages(messages: Message[]): Timeline {
           timeline = addStep(timeline, step)
         }
       } else if (hasText) {
-        // Either finalize the most recent task with this text, or
-        // create a new completed task for a free-form assistant turn.
         const last = timeline.items[timeline.items.length - 1]
         if (last && last.type === 'agent-task') {
           timeline = finalizeLastTask(timeline, msg.content!)
@@ -127,26 +132,31 @@ function restoreTimelineFromMessages(messages: Message[]): Timeline {
   return timeline
 }
 
-export function App({ config }: AppProps) {
+export function App({ config, projectContext, initialSession }: AppProps) {
   const { exit } = useApp()
   const { stdout } = useStdout()
 
-  const [showWelcome, setShowWelcome] = useState(true)
+  const [showWelcome, setShowWelcome] = useState(!initialSession)
   const [showShortcuts, setShowShortcuts] = useState(false)
-  const [timeline, setTimeline] = useState<Timeline>(createTimeline())
+  const [timeline, setTimeline] = useState<Timeline>(
+    initialSession ? restoreTimelineFromMessages(initialSession.messages) : createTimeline()
+  )
   const [approval, setApproval] = useState<ApprovalRequest | null>(null)
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set())
   const [tokenCount, setTokenCount] = useState(0)
   const [taskStartTime, setTaskStartTime] = useState(0)
   const [now, setNow] = useState(Date.now())
+  const [costSummary, setCostSummary] = useState('')
+  const [subAgents, setSubAgents] = useState<SubAgentConfig[]>([])
 
   const agentRef = useRef<AgentLoop | null>(null)
   const timelineRef = useRef(timeline)
   const cancelledRef = useRef(false)
   const busyRef = useRef(false)
-  const sessionRef = useRef<SessionData | null>(null)
+  const sessionRef = useRef<SessionData | null>(initialSession || null)
   const sessionStoreRef = useRef(new SessionStore())
   const toolStartRef = useRef<Map<string, number>>(new Map())
+  const costTrackerRef = useRef(new CostTracker(config.model || 'MiMo-7B-RL'))
 
   useEffect(() => {
     timelineRef.current = timeline
@@ -159,10 +169,17 @@ export function App({ config }: AppProps) {
     return () => clearInterval(timer)
   }, [taskStartTime])
 
-  // Initialize agent + session
+  // Initialize agent + session + sub-agents
   useEffect(() => {
-    agentRef.current = new AgentLoop(config, buildSystemPrompt())
+    const systemPrompt = buildSystemPrompt(projectContext)
+    agentRef.current = new AgentLoop(config, systemPrompt)
+    
     const initSession = async () => {
+      if (initialSession) {
+        sessionRef.current = initialSession
+        return
+      }
+      
       const store = sessionStoreRef.current
       const latest = await store.getLatest()
       if (latest && latest.messages.length > 0) {
@@ -173,8 +190,19 @@ export function App({ config }: AppProps) {
         sessionRef.current = await store.create(config.model || 'MiMo-7B-RL')
       }
     }
+    
+    const initSubAgents = async () => {
+      try {
+        const agents = await loadSubAgents()
+        setSubAgents(agents)
+      } catch {
+        // 忽略加载错误
+      }
+    }
+    
     initSession().catch(() => {})
-  }, [config])
+    initSubAgents().catch(() => {})
+  }, [config, projectContext, initialSession])
 
   const handleToggleStep = useCallback((stepId: string) => {
     setExpandedSteps(prev => {
@@ -198,12 +226,27 @@ export function App({ config }: AppProps) {
     async (text: string) => {
       if (busyRef.current) return
 
+      // 检查是否是子代理调用 (@agent-name)
+      const agentMatch = text.match(/^@(\w[\w-]*)\s+(.+)$/s)
+      if (agentMatch) {
+        const agentName = agentMatch[1]
+        const agentMessage = agentMatch[2]
+        
+        const subAgent = findSubAgent(subAgents, agentName)
+        if (subAgent) {
+          await handleSubAgentCall(subAgent, agentMessage)
+          return
+        }
+      }
+
       const slash = handleSlashCommand(text)
       if (slash.handled) {
         if (slash.message === '__CLEAR__') {
           setTimeline(createTimeline())
           setExpandedSteps(new Set())
           setTokenCount(0)
+          costTrackerRef.current.reset()
+          setCostSummary('')
           sessionRef.current = await sessionStoreRef.current.create(config.model || 'MiMo-7B-RL')
           return
         }
@@ -213,6 +256,50 @@ export function App({ config }: AppProps) {
         }
         if (slash.message === '__MODEL__') {
           setTimeline(prev => addUserMessage(prev, `[System] Model: ${config.model}, API: ${config.baseURL}`))
+          return
+        }
+        if (slash.message === '__COST__') {
+          const report = costTrackerRef.current.renderDetailedReport()
+          setTimeline(prev => addUserMessage(prev, report))
+          return
+        }
+        if (slash.message === '__CONTEXT__') {
+          const contextInfo = getContextStatus(tokenCount, 32000)
+          setTimeline(prev => addUserMessage(prev, contextInfo))
+          return
+        }
+        if (slash.message === '__COMPACT__') {
+          await handleCompact()
+          return
+        }
+        if (slash.message === '__SESSIONS__') {
+          const sessionList = await getSessionList()
+          setTimeline(prev => addUserMessage(prev, sessionList))
+          return
+        }
+        if (slash.message?.startsWith('__RESUME__')) {
+          const sessionId = slash.message.replace('__RESUME__', '')
+          await handleResumeSession(sessionId)
+          return
+        }
+        if (slash.message === '__INIT__') {
+          const result = await handleInitProject()
+          setTimeline(prev => addUserMessage(prev, result))
+          return
+        }
+        if (slash.message === '__MEMORY__') {
+          const memoryInfo = getProjectMemoryInfo()
+          setTimeline(prev => addUserMessage(prev, memoryInfo))
+          return
+        }
+        if (slash.message === '__AGENTS__') {
+          const agentsInfo = getAgentsInfo()
+          setTimeline(prev => addUserMessage(prev, agentsInfo))
+          return
+        }
+        if (slash.message === '__HELP__') {
+          const helpText = getHelpText()
+          setTimeline(prev => addUserMessage(prev, helpText))
           return
         }
         if (slash.message) {
@@ -237,6 +324,14 @@ export function App({ config }: AppProps) {
 
       const userMsg: Message = { role: 'user', content: text }
       const history = [...(sessionRef.current?.messages || []), userMsg]
+
+      // 检查是否需要压缩上下文
+      if (needsCompression(history)) {
+        const { messages: compressed, summary } = compressMessages(history)
+        history.length = 0
+        history.push(...compressed)
+        setTimeline(prev => addUserMessage(prev, `[Context compressed: ${summary}]`))
+      }
 
       let hadError = false
 
@@ -317,6 +412,7 @@ export function App({ config }: AppProps) {
             },
             onDone: () => {
               setTimeline(prev => completeTask(prev))
+              setCostSummary(costTrackerRef.current.renderStatusBar())
             },
             onThinking: () => {
               setTimeline(prev => {
@@ -354,8 +450,48 @@ export function App({ config }: AppProps) {
       setTaskStartTime(0)
       busyRef.current = false
     },
-    [config, showWelcome, exit]
+    [config, showWelcome, exit, projectContext, tokenCount, subAgents]
   )
+
+  /**
+   * 处理子代理调用
+   */
+  const handleSubAgentCall = useCallback(async (agent: SubAgentConfig, message: string) => {
+    busyRef.current = true
+    setShowWelcome(false)
+    cancelledRef.current = false
+
+    // 添加用户消息
+    setTimeline(prev => addUserMessage(prev, `@${agent.name} ${message}`))
+    
+    // 创建代理任务
+    setTimeline(prev => createAgentTask(prev, agent.maxIterations || 10))
+    setTaskStartTime(Date.now())
+
+    try {
+      const result = await executeSubAgent(
+        agent,
+        message,
+        {
+          apiKey: config.apiKey,
+          baseURL: config.baseURL,
+          model: config.model || 'MiMo-7B-RL',
+        },
+        projectContext
+      )
+
+      if (result.success) {
+        setTimeline(prev => finalizeLastTask(prev, result.result))
+      } else {
+        setTimeline(prev => errorTask(prev, result.error || 'Agent execution failed'))
+      }
+    } catch (err: any) {
+      setTimeline(prev => errorTask(prev, err.message || 'Agent execution failed'))
+    }
+
+    setTaskStartTime(0)
+    busyRef.current = false
+  }, [config, projectContext])
 
   const handleApproval = useCallback(
     (approved: boolean) => {
@@ -367,6 +503,154 @@ export function App({ config }: AppProps) {
     },
     [approval]
   )
+
+  const handleCompact = useCallback(async () => {
+    if (!sessionRef.current) return
+    
+    const messages = sessionRef.current.messages
+    const { messages: compressed, summary, tokensSaved, tokensBefore, tokensAfter } = 
+      compressMessages(messages)
+    
+    sessionRef.current.messages = compressed
+    await sessionStoreRef.current.save(sessionRef.current).catch(() => {})
+    
+    setTimeline(createTimeline())
+    setTokenCount(tokensAfter)
+    
+    const compactReport = [
+      '🗜️ Context Compressed',
+      '─'.repeat(40),
+      `Before: ${tokensBefore.toLocaleString()} tokens`,
+      `After:  ${tokensAfter.toLocaleString()} tokens`,
+      `Saved:  ${tokensSaved.toLocaleString()} tokens (${Math.round(tokensSaved / tokensBefore * 100)}%)`,
+      '',
+      `Summary: ${summary}`,
+    ].join('\n')
+    
+    setTimeline(prev => addUserMessage(prev, compactReport))
+  }, [])
+
+  const handleResumeSession = useCallback(async (sessionId: string) => {
+    const store = sessionStoreRef.current
+    let session = await store.load(sessionId)
+    
+    if (!session) {
+      const sessions = await store.list()
+      session = sessions.find(s => s.id.startsWith(sessionId)) || null
+    }
+    
+    if (!session) {
+      setTimeline(prev => addUserMessage(prev, `[System] Session not found: ${sessionId}`))
+      return
+    }
+    
+    sessionRef.current = session
+    setTimeline(restoreTimelineFromMessages(session.messages))
+    setShowWelcome(false)
+    
+    const totalTokens = session.messages.reduce((sum, m) => {
+      return sum + (m.content?.length || 0) / 4
+    }, 0)
+    setTokenCount(Math.floor(totalTokens))
+    
+    setTimeline(prev => addUserMessage(prev, 
+      `[System] Resumed session: ${session!.id}\nModel: ${session!.model} | Messages: ${session!.messages.length}`
+    ))
+  }, [])
+
+  const handleInitProject = useCallback(async () => {
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    
+    const mimoPath = path.join(process.cwd(), 'MIMO.md')
+    
+    try {
+      await fs.access(mimoPath)
+      return 'MIMO.md already exists. Edit it manually or delete it first.'
+    } catch {}
+    
+    const template = `# ${path.basename(process.cwd())}
+
+## 项目概述
+[简要描述项目的目的和功能]
+
+## 技术栈
+- 框架: 
+- 语言: 
+- 数据库: 
+- 测试: 
+
+## 常用命令
+\`\`\`bash
+npm run dev
+npm test
+npm run build
+\`\`\`
+
+## 代码规范
+- 缩进: 2 空格
+- 命名: camelCase (变量/函数), PascalCase (类/组件)
+`
+    
+    await fs.writeFile(mimoPath, template, 'utf-8')
+    return `✅ Created MIMO.md in ${process.cwd()}\nEdit it to add your project context.`
+  }, [])
+
+  const getProjectMemoryInfo = useCallback(() => {
+    const summary = getProjectContextSummary({ 
+      projectMd: '', 
+      localMd: '', 
+      fullContext: projectContext || '', 
+      found: !!projectContext 
+    })
+    
+    const lines = [
+      '📋 Project Memory',
+      '─'.repeat(40),
+      summary,
+      '',
+      'Context Status:',
+      `  Project context: ${projectContext ? '✅ Loaded' : '❌ Not found'}`,
+      '',
+      'Commands:',
+      '  /init     - Create MIMO.md template',
+      '  /memory   - Show this info',
+      '  /compact  - Compress conversation context',
+      '  /agents   - List available sub-agents',
+    ]
+    
+    return lines.join('\n')
+  }, [projectContext])
+
+  const getAgentsInfo = useCallback(() => {
+    if (subAgents.length === 0) {
+      return '📭 No sub-agents found.\n\nCreate agents in .mimo/agents/ directory.'
+    }
+
+    const lines = [
+      '🤖 Available Sub-Agents',
+      '─'.repeat(40),
+      '',
+    ]
+
+    for (const agent of subAgents) {
+      lines.push(`  @${agent.name}`)
+      if (agent.description) {
+        lines.push(`    ${agent.description}`)
+      }
+      if (agent.model) {
+        lines.push(`    Model: ${agent.model}`)
+      }
+      if (agent.tools) {
+        lines.push(`    Tools: ${agent.tools.join(', ')}`)
+      }
+      lines.push('')
+    }
+
+    lines.push('Usage: @agent-name <your message>')
+
+    return lines.join('\n')
+  }, [subAgents])
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
@@ -384,11 +668,12 @@ export function App({ config }: AppProps) {
 
   return (
     <Box flexDirection="column" height={stdout.rows}>
-      {/* Top bar: model · cwd (Claude Code style, minimal) */}
+      {/* Top bar */}
       <Box flexShrink={0}>
         <StatusBar
           model={config.model || 'MiMo'}
           workingDir={process.cwd()}
+          costSummary={costSummary}
         />
       </Box>
 
@@ -398,6 +683,8 @@ export function App({ config }: AppProps) {
           <Welcome
             model={config.model || 'MiMo-7B-RL'}
             workingDir={process.cwd()}
+            projectContext={projectContext}
+            subAgents={subAgents}
           />
         ) : (
           <TimelineView
@@ -408,7 +695,7 @@ export function App({ config }: AppProps) {
         )}
       </Box>
 
-      {/* Bottom: approval prompt (if any) + user input */}
+      {/* Bottom: approval prompt + user input */}
       <Box flexDirection="column" flexShrink={0}>
         {approval && (
           <ToolApproval
@@ -431,19 +718,19 @@ export function App({ config }: AppProps) {
   )
 }
 
-function buildSystemPrompt(): string {
+function buildSystemPrompt(projectContext?: string): string {
   const cwd = process.cwd()
   const platform = process.platform
   const date = new Date().toISOString().split('T')[0]
 
-  return `You are MiMo CLI, an expert AI coding assistant in the terminal (similar to Claude Code).
+  let prompt = `You are MiMo CLI, an expert AI coding assistant in the terminal (similar to Claude Code).
 
 Environment:
 - Working directory: ${cwd}
 - Platform: ${platform}
 - Date: ${date}
 
-You have tools to read, write, and edit files, run shell commands, and search the codebase.
+You have tools to read, write, and edit files, run shell commands, search the codebase, and search/fetch web content.
 
 Behavior:
 - Be direct and helpful. Prefer action over lengthy explanations.
@@ -457,4 +744,130 @@ Behavior:
 Safety:
 - Do not run destructive commands without explicit user request.
 - Do not exfiltrate secrets or credentials.`
+
+  if (projectContext) {
+    prompt += `\n\nProject Context:\n${projectContext}`
+  }
+
+  return prompt
+}
+
+function getContextStatus(currentTokens: number, maxTokens: number): string {
+  const usagePercent = Math.round((currentTokens / maxTokens) * 100)
+  const remaining = maxTokens - currentTokens
+  
+  let status: string
+  let emoji: string
+  if (usagePercent < 50) {
+    status = 'Healthy'
+    emoji = '🟢'
+  } else if (usagePercent < 70) {
+    status = 'Moderate'
+    emoji = '🟡'
+  } else if (usagePercent < 85) {
+    status = 'High'
+    emoji = '🟠'
+  } else {
+    status = 'Critical'
+    emoji = '🔴'
+  }
+
+  const barLength = 30
+  const filledLength = Math.round((usagePercent / 100) * barLength)
+  const bar = '█'.repeat(filledLength) + '░'.repeat(barLength - filledLength)
+
+  const lines = [
+    `${emoji} Context Window Usage`,
+    '─'.repeat(40),
+    `Status: ${status}`,
+    `Usage:  ${bar} ${usagePercent}%`,
+    '',
+    `Used:      ${currentTokens.toLocaleString()} tokens`,
+    `Remaining: ${remaining.toLocaleString()} tokens`,
+    `Total:     ${maxTokens.toLocaleString()} tokens`,
+  ]
+
+  if (usagePercent >= 85) {
+    lines.push('')
+    lines.push('⚠️  Recommendation: Run /compact to compress context')
+  }
+
+  return lines.join('\n')
+}
+
+async function getSessionList(): Promise<string> {
+  const store = new SessionStore()
+  const sessions = await store.list()
+  
+  if (sessions.length === 0) {
+    return '📭 No saved sessions found.'
+  }
+
+  const lines = [
+    '📋 Saved Sessions',
+    '─'.repeat(60),
+    '',
+  ]
+
+  for (const session of sessions.slice(0, 10)) {
+    const date = new Date(session.updatedAt).toLocaleString()
+    const msgCount = session.messages.length
+    const preview = session.messages.find(m => m.role === 'user')?.content?.slice(0, 50) || ''
+    
+    lines.push(`  ID: ${session.id}`)
+    lines.push(`  Model: ${session.model} | Messages: ${msgCount} | Updated: ${date}`)
+    if (preview) {
+      lines.push(`  Preview: ${preview}...`)
+    }
+    lines.push('')
+  }
+
+  if (sessions.length > 10) {
+    lines.push(`... and ${sessions.length - 10} more sessions`)
+  }
+
+  lines.push('─'.repeat(60))
+  lines.push('Commands: /session resume <id> | /session delete <id> | /session clear')
+
+  return lines.join('\n')
+}
+
+function getHelpText(): string {
+  return `📖 MiMo CLI Commands
+${'─'.repeat(40)}
+
+Session:
+  /clear          Clear conversation history
+  /session list   List all saved sessions
+  /session resume Resume a session by ID
+  /session delete Delete a session
+  /session clear  Clear all sessions
+
+Context:
+  /compact        Compress conversation context
+  /context        Show context window usage
+  /cost           Show cost breakdown
+  /memory         Show project memory info
+
+Project:
+  /init           Create MIMO.md template
+  /agents         List available sub-agents
+
+System:
+  /model          Show current model info
+  /help           Show this help message
+  /exit           Exit MiMo CLI
+
+Sub-Agents:
+  @agent-name     Call a sub-agent (e.g., @code-reviewer review this file)
+
+Keyboard:
+  Ctrl+C          Cancel current operation / Exit
+  Tab             Toggle shortcuts panel
+
+Tips:
+  - Use @filename to reference files
+  - Use @agent-name to call sub-agents
+  - Use /compact when context gets large
+  - Create MIMO.md for project-specific context`
 }

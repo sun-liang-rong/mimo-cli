@@ -1,4 +1,4 @@
-// 顶部状态栏 - Claude Code 风格: 单行极简, model · cwd · branch
+// 顶部状态栏 - Claude Code 风格: 单行极简, model · cwd · branch · cost
 
 import React from 'react'
 import { Box, Text, useStdout } from 'ink'
@@ -8,6 +8,7 @@ export interface TopStatusBarProps {
   model: string
   workingDir: string
   branch?: string
+  costSummary?: string
 }
 
 function shortenDir(dir: string, maxLen: number): string {
@@ -25,10 +26,17 @@ function shortenDir(dir: string, maxLen: number): string {
   return prefix + display.slice(-room) + path.sep + base
 }
 
-export function TopStatusBar({ model, workingDir, branch }: TopStatusBarProps) {
+export function TopStatusBar({ model, workingDir, branch, costSummary }: TopStatusBarProps) {
   const { stdout } = useStdout()
   const width = stdout.columns || 80
-  const dir = shortenDir(workingDir, Math.max(20, Math.floor(width * 0.4)))
+  
+  // 计算各部分的最大宽度
+  const modelWidth = model.length + 4
+  const branchWidth = branch ? branch.length + 4 : 0
+  const costWidth = costSummary ? costSummary.length + 4 : 0
+  const dirMaxWidth = Math.max(20, width - modelWidth - branchWidth - costWidth - 10)
+  
+  const dir = shortenDir(workingDir, dirMaxWidth)
 
   return (
     <Box
@@ -46,13 +54,19 @@ export function TopStatusBar({ model, workingDir, branch }: TopStatusBarProps) {
         <Text color="cyan" bold>{model}</Text>
         <Text color="gray">  ·  </Text>
         <Text color="gray">{dir}</Text>
+        {branch && (
+          <>
+            <Text color="gray">  ·  </Text>
+            <Text color="gray">⎇ </Text>
+            <Text color="green">{branch}</Text>
+          </>
+        )}
       </Box>
-      {branch && (
-        <Box>
-          <Text color="gray">⎇ </Text>
-          <Text color="green">{branch}</Text>
-        </Box>
-      )}
+      <Box>
+        {costSummary && (
+          <Text color="yellow">{costSummary}</Text>
+        )}
+      </Box>
     </Box>
   )
 }
