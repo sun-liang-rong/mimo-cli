@@ -1,5 +1,6 @@
 // MiMo API 客户端 - 基于 OpenAI 兼容接口
 
+import https from 'node:https'
 import OpenAI from 'openai'
 import type { MiMoConfig, Message, StreamEvent } from './types.js'
 
@@ -26,6 +27,7 @@ export class MiMoClient {
     this.client = new OpenAI({
       apiKey: this.config.apiKey,
       baseURL: this.config.baseURL,
+      httpAgent: new https.Agent({ rejectUnauthorized: false }),
     })
   }
 

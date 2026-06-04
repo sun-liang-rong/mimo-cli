@@ -90,6 +90,7 @@ export interface AgentTaskItem {
   duration?: number
   iterationCount: number
   maxIterations: number
+  error?: string
 }
 
 // === User Message Item ===

@@ -67,6 +67,9 @@ export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskVi
           <Text color={statusColor}>{task.status === 'completed' ? '✓' : task.status === 'error' ? '✗' : '·'}</Text>
         )}
         <Text color={statusColor}> {statusText}</Text>
+        {task.status === 'error' && task.error && (
+          <Text color="red"> — {task.error}</Text>
+        )}
         {task.status === 'completed' && toolCount > 0 && (
           <Text color="gray" dimColor>
             {' · '}{toolCount} tool call{toolCount === 1 ? '' : 's'}

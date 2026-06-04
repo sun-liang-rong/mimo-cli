@@ -170,6 +170,7 @@ export function errorTask(timeline: Timeline, _error: string): Timeline {
     ...last,
     status: 'error',
     phase: 'error',
+    error: _error,
     completedAt: now,
     duration: now - last.startedAt,
   }
