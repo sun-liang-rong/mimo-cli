@@ -7,6 +7,7 @@ import { withRetry } from '../api/retry.js'
 import type { Message, ToolCall } from '../api/types.js'
 import type { MiMoConfig } from '../api/types.js'
 import { AgentEventEmitter } from '../tui/events.js'
+import fs from 'fs'
 
 export interface AgentCallbacks {
   onText: (text: string) => void
@@ -85,6 +86,9 @@ export class AgentLoop {
   ): Promise<Message[]> {
     this.resetCancel()
 
+    const _dbg = process.env.DEBUG
+    if (_dbg) fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] sendMessage called, historyLen=${history.length}\n`)
+
     const taskId = `task-${Date.now()}`
     this.eventEmitter.emit({ type: 'agent:start', taskId })
 
@@ -146,12 +150,14 @@ You can continue by sending a new message to continue the task from where it lef
 
         // API 调用带重试
         const events: Array<{ type: string; content?: string; tool_call?: ToolCall; error?: string }> = []
+        if (_dbg) fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] calling streamChat, msgs=${currentMessages.length}, tools=${toolDefs.length}\n`)
         await withRetry(
           async () => {
             events.length = 0
             for await (const event of this.client.streamChat(currentMessages, toolDefs)) {
               events.push(event)
               if (event.type === 'error') {
+                if (_dbg) fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] error event: ${event.error}\n`)
                 throw new Error(event.error || 'Stream error')
               }
             }
@@ -161,6 +167,7 @@ You can continue by sending a new message to continue the task from where it lef
             callbacks.onRetry?.(attempt, error, delayMs)
           }
         ).catch((error: Error) => {
+          if (_dbg) fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] caught error: ${error.message}, events=${events.length}\n`)
           // 如果重试耗尽仍然失败
           if (events.length === 0) {
             callbacks.onError(error.message || 'Unknown error')

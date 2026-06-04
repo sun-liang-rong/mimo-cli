@@ -53,6 +53,11 @@ export class MiMoClient {
     this.abortController = new AbortController()
     const effectiveSignal = signal || this.abortController.signal
 
+    if (process.env.DEBUG) {
+      const fs = await import('fs')
+      fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] streamChat called, model=${this.config.model}, baseURL=${this.config.baseURL}, messages=${messages.length}, tools=${tools?.length || 0}\n`)
+    }
+
     try {
       const params: OpenAI.ChatCompletionCreateParamsStreaming = {
         model: this.config.model,
@@ -64,6 +69,11 @@ export class MiMoClient {
 
       if (tools && tools.length > 0) {
         params.tools = tools
+      }
+
+      if (process.env.DEBUG) {
+        const fs = await import('fs')
+        fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] API request params:\n${JSON.stringify(params, (key, val) => key === 'tools' ? `[${val.length} tools]` : val, 2)}\n\n`)
       }
 
       const stream = await this.client.chat.completions.create(params, {
@@ -131,9 +141,17 @@ export class MiMoClient {
         yield { type: 'error', error: 'Request cancelled' }
         return
       }
+      const detail = error.error?.message || error.body || error.status || ''
+      const debugInfo = process.env.DEBUG
+        ? `\n[DEBUG] status=${error.status} type=${error.error?.type} code=${error.error?.code} param=${error.error?.param}`
+        : ''
+      if (process.env.DEBUG) {
+        const fs = await import('fs')
+        fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] ERROR: ${error.message}\n  status=${error.status} detail=${JSON.stringify(error.error || error.body || '')}\n\n`)
+      }
       yield {
         type: 'error',
-        error: error.message || 'Unknown API error',
+        error: `${error.message}${detail ? ` — ${detail}` : ''}${debugInfo}`,
       }
     } finally {
       this.abortController = null

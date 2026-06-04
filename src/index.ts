@@ -3,6 +3,11 @@
 // MiMo CLI - 终端 AI 编程助手
 // 类似 Claude Code，接入小米 MiMo 大模型
 
+import fs from 'fs'
+if (process.env.DEBUG) {
+  fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] MiMo CLI started, DEBUG=${process.env.DEBUG}\n`)
+}
+
 import { program } from 'commander'
 import React from 'react'
 import { render } from 'ink'
