@@ -65,7 +65,6 @@ export class InteractiveCLI {
       });
 
       await this.processAIResponse();
-      this.conversation.startNewTurn();
     }
   }
 
@@ -132,25 +131,30 @@ export class InteractiveCLI {
         const messages = this.conversation.getMessages();
         const tools = this.toolRegistry.getDefinitions();
 
+        // Debug: log messages
+        console.log(chalk.gray('\n[DEBUG] Messages count: ' + messages.length));
+        console.log(chalk.gray('[DEBUG] Last 3 messages:'));
+        const last3 = messages.slice(-3);
+        for (const m of last3) {
+          console.log(chalk.gray(`  role=${m.role}, content=${m.content?.substring(0, 50)}, tool_calls=${(m as any).tool_calls?.length || 0}, tool_call_id=${(m as any).tool_call_id || 'none'}`));
+        }
+
         const response = await this.client.chat(messages, tools);
         this.renderer.stopThinking();
 
         if (response.content) {
           console.log(chalk.cyan('\nMiMo: ') + response.content);
-          this.conversation.addMessage({
-            role: 'assistant',
-            content: response.content
-          });
         }
 
         if (response.toolCalls && response.toolCalls.length > 0) {
-          if (!response.content) {
-            this.conversation.addMessage({
-              role: 'assistant',
-              content: null
-            });
-          }
+          // Add assistant message with tool_calls
+          this.conversation.addMessage({
+            role: 'assistant',
+            content: response.content || null,
+            tool_calls: response.toolCalls
+          } as any);
 
+          // Execute each tool and add results
           for (const toolCall of response.toolCalls) {
             const args = JSON.parse(toolCall.function.arguments);
             console.log(formatToolCall(toolCall.function.name, args));
@@ -158,10 +162,16 @@ export class InteractiveCLI {
             const result = await this.toolRegistry.execute(toolCall.function.name, args);
             console.log(formatToolResult(result));
 
-            this.conversation.addToolCall(toolCall);
             this.conversation.addToolResult(toolCall.id, JSON.stringify(result));
           }
         } else {
+          // No tool calls, just add the assistant message
+          if (response.content) {
+            this.conversation.addMessage({
+              role: 'assistant',
+              content: response.content
+            });
+          }
           hasToolCalls = false;
         }
       }

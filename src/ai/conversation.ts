@@ -1,13 +1,7 @@
 import { Message, ToolCall } from './client';
 
-export interface ConversationTurn {
-  messages: Message[];
-  toolCalls?: ToolCall[];
-  toolResults?: Record<string, string>;
-}
-
 export class ConversationManager {
-  private history: ConversationTurn[] = [];
+  private messages: Message[] = [];
   private systemPrompt: string;
 
   constructor(systemPrompt?: string) {
@@ -18,82 +12,45 @@ export class ConversationManager {
 - 解答编程问题
 
 请用中文回复，保持简洁专业。`;
+    this.messages = [];
   }
 
   addMessage(message: Message): void {
-    if (this.history.length === 0) {
-      this.history.push({ messages: [] });
-    }
-    this.history[this.history.length - 1].messages.push(message);
+    this.messages.push(message);
   }
 
   addToolCall(toolCall: ToolCall): void {
-    if (this.history.length === 0) {
-      this.history.push({ messages: [] });
-    }
-    const currentTurn = this.history[this.history.length - 1];
-    if (!currentTurn.toolCalls) {
-      currentTurn.toolCalls = [];
-    }
-    currentTurn.toolCalls.push(toolCall);
+    this.messages.push({
+      role: 'assistant',
+      content: null,
+      tool_calls: [toolCall]
+    } as any);
   }
 
   addToolResult(toolCallId: string, result: string): void {
-    if (this.history.length === 0) {
-      this.history.push({ messages: [] });
-    }
-    const currentTurn = this.history[this.history.length - 1];
-    if (!currentTurn.toolResults) {
-      currentTurn.toolResults = {};
-    }
-    currentTurn.toolResults[toolCallId] = result;
+    this.messages.push({
+      role: 'tool',
+      tool_call_id: toolCallId,
+      content: result
+    } as any);
   }
 
   startNewTurn(): void {
-    this.history.push({ messages: [] });
+    // No-op, we just keep adding messages
   }
 
   getMessages(): Message[] {
-    const messages: Message[] = [
-      { role: 'system', content: this.systemPrompt }
+    return [
+      { role: 'system', content: this.systemPrompt },
+      ...this.messages
     ];
-
-    for (const turn of this.history) {
-      messages.push(...turn.messages);
-      
-      if (turn.toolCalls) {
-        for (const tc of turn.toolCalls) {
-          messages.push({
-            role: 'assistant',
-            content: null,
-            tool_calls: [tc]
-          } as any);
-        }
-      }
-      
-      if (turn.toolResults) {
-        for (const [id, result] of Object.entries(turn.toolResults)) {
-          messages.push({
-            role: 'tool',
-            tool_call_id: id,
-            content: result
-          } as any);
-        }
-      }
-    }
-
-    return messages;
   }
 
   clear(): void {
-    this.history = [];
-  }
-
-  getHistory(): ConversationTurn[] {
-    return [...this.history];
+    this.messages = [];
   }
 
   getTurnCount(): number {
-    return this.history.length;
+    return this.messages.filter(m => m.role === 'user').length;
   }
 }
