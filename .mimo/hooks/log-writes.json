@@ -1,6 +1,0 @@
-{
-  "type": "post-tool",
-  "pattern": "Write",
-  "command": "echo \"[$(date)] File written: $MIMO_HOOK_INPUT\" >> ~/.mimo/activity.log",
-  "background": true
-}

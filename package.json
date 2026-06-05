@@ -1,19 +1,17 @@
 {
   "name": "mimo-cli",
-  "version": "0.1.0",
-  "description": "A terminal AI coding assistant powered by MiMo, inspired by Claude Code",
-  "type": "module",
+  "version": "1.0.0",
+  "description": "MiMo CLI - AI 编程助手，接入小米 MiMo 大模型",
+  "main": "dist/index.js",
   "bin": {
     "mimo": "./dist/index.js"
   },
-  "main": "./dist/index.js",
   "scripts": {
-    "dev": "npx tsx src/index.ts",
     "build": "tsc",
+    "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",
-    "mimo": "npx tsx src/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "jest",
+    "lint": "tsc --noEmit"
   },
   "keywords": [
     "cli",
@@ -21,23 +19,20 @@
     "mimo",
     "coding-assistant"
   ],
-  "author": "",
   "license": "MIT",
   "dependencies": {
-    "chalk": "^5.6.2",
-    "cli-highlight": "^2.1.11",
+    "@types/node": "^25.9.1",
+    "chalk": "^4.1.2",
     "commander": "^12.1.0",
-    "fast-glob": "^3.3.3",
-    "ink": "^4.4.1",
-    "openai": "^4.104.0",
-    "ora": "^7.0.1",
-    "react": "^18.3.1"
+    "openai": "^6.42.0",
+    "ora": "^5.4.1",
+    "simple-git": "^3.36.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
   },
   "devDependencies": {
-    "@types/node": "^20.10.0",
-    "@types/react": "^18.2.45",
-    "ink-testing-library": "^4.0.0",
-    "typescript": "^5.3.3",
-    "vitest": "^1.6.0"
+    "@types/jest": "^30.0.0",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.11"
   }
 }
