@@ -2,7 +2,7 @@
 // Claude Code style: minimal top bar, chat-style middle, single-line input at bottom.
 
 import React, { useState, useCallback, useRef, useEffect } from 'react'
-import { Box, useApp, useInput, useStdout } from 'ink'
+import { Box, Text, useApp, useInput, useStdout } from 'ink'
 import { AgentLoop } from '../agent/loop.js'
 import type { Message } from '../api/types.js'
 import type { Config } from '../config/store.js'
@@ -13,6 +13,7 @@ import { TimelineView } from './TimelineView.js'
 import { UserInput } from './UserInput.js'
 import { StatusBar } from './StatusBar.js'
 import { ToolApproval } from './ToolApproval.js'
+import { StreamingMetrics } from './StreamingMetrics.js'
 import { handleSlashCommand } from './commands.js'
 import {
   createTimeline,
@@ -142,6 +143,8 @@ export function App({ config, projectContext, initialSession }: AppProps) {
     initialSession ? restoreTimelineFromMessages(initialSession.messages) : createTimeline()
   )
   const [approval, setApproval] = useState<ApprovalRequest | null>(null)
+  const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([])
+  const [alwaysAllowTools, setAlwaysAllowTools] = useState<Set<string>>(new Set())
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set())
   const [tokenCount, setTokenCount] = useState(0)
   const [taskStartTime, setTaskStartTime] = useState(0)
@@ -153,6 +156,7 @@ export function App({ config, projectContext, initialSession }: AppProps) {
   const timelineRef = useRef(timeline)
   const cancelledRef = useRef(false)
   const busyRef = useRef(false)
+  const approvalQueueRef = useRef<ApprovalRequest[]>([])
   const sessionRef = useRef<SessionData | null>(initialSession || null)
   const sessionStoreRef = useRef(new SessionStore())
   const toolStartRef = useRef<Map<string, number>>(new Map())
@@ -424,9 +428,19 @@ export function App({ config, projectContext, initialSession }: AppProps) {
               })
             },
             requestApproval: (toolName, input) => {
+              // Check if tool is in always-allow set
+              if (alwaysAllowTools.has(toolName)) {
+                return Promise.resolve(true)
+              }
+              
               setTimeline(prev => updateTaskPhase(prev, 'awaiting-approval'))
               return new Promise<boolean>((resolve) => {
-                setApproval({ toolName, input, resolve })
+                const request: ApprovalRequest = { toolName, input, resolve }
+                approvalQueueRef.current = [...approvalQueueRef.current, request]
+                setApprovalQueue(approvalQueueRef.current)
+                if (!approval) {
+                  setApproval(request)
+                }
               })
             },
             isCancelled: () => cancelledRef.current,
@@ -476,6 +490,8 @@ export function App({ config, projectContext, initialSession }: AppProps) {
           apiKey: config.apiKey,
           baseURL: config.baseURL,
           model: config.model || 'MiMo-7B-RL',
+          maxTokens: 4096,
+          temperature: 0.7,
         },
         projectContext
       )
@@ -497,12 +513,48 @@ export function App({ config, projectContext, initialSession }: AppProps) {
     (approved: boolean) => {
       if (approval) {
         approval.resolve(approved)
-        setApproval(null)
-        setTimeline(prev => updateTaskPhase(prev, 'executing-tools'))
+        approvalQueueRef.current = approvalQueueRef.current.filter(r => r !== approval)
+        setApprovalQueue(approvalQueueRef.current)
+        
+        // Process next approval in queue
+        const nextApproval = approvalQueueRef.current[0] || null
+        setApproval(nextApproval)
+        
+        if (!nextApproval) {
+          setTimeline(prev => updateTaskPhase(prev, 'executing-tools'))
+        }
       }
     },
     [approval]
   )
+
+  const handleAlwaysAllow = useCallback(() => {
+    if (approval) {
+      setAlwaysAllowTools(prev => new Set([...prev, approval.toolName]))
+      approval.resolve(true)
+      approvalQueueRef.current = approvalQueueRef.current.filter(r => r !== approval)
+      setApprovalQueue(approvalQueueRef.current)
+      
+      // Process next approval in queue
+      const nextApproval = approvalQueueRef.current[0] || null
+      setApproval(nextApproval)
+      
+      if (!nextApproval) {
+        setTimeline(prev => updateTaskPhase(prev, 'executing-tools'))
+      }
+    }
+  }, [approval])
+
+  const handleAllowAll = useCallback(() => {
+    // Resolve all pending approvals
+    for (const req of approvalQueueRef.current) {
+      req.resolve(true)
+    }
+    approvalQueueRef.current = []
+    setApprovalQueue([])
+    setApproval(null)
+    setTimeline(prev => updateTaskPhase(prev, 'executing-tools'))
+  }, [])
 
   const handleCompact = useCallback(async () => {
     if (!sessionRef.current) return
@@ -660,11 +712,38 @@ npm run build
         exit()
       }
     }
+    // Ctrl+O: Toggle expansion of all tool call steps
+    if (key.ctrl && input === 'o') {
+      const task = getActiveTask(timeline)
+      if (task) {
+        const allStepIds = task.steps
+          .filter(s => s.type === 'tool-call' && s.toolCall?.result)
+          .map(s => s.id)
+        
+        if (allStepIds.length === 0) return
+        
+        const allExpanded = allStepIds.every(id => expandedSteps.has(id))
+        if (allExpanded) {
+          setExpandedSteps(new Set())
+        } else {
+          setExpandedSteps(new Set(allStepIds))
+        }
+      }
+    }
   })
 
   const busy = taskStartTime > 0
   const inputDisabled = busy || !!approval
   const activeTask = getActiveTask(timeline)
+  const maxContextTokens = 32000  // TODO: make configurable
+  const contextUsage = Math.min(100, Math.round((tokenCount / maxContextTokens) * 100))
+  
+  // Compute streaming metrics
+  const isStreaming = activeTask?.phase === 'streaming-text'
+  const charCount = activeTask?.streamingText?.length || 0
+  const activeToolCount = activeTask?.steps.filter(s => s.status === 'running').length || 0
+  const completedToolCount = activeTask?.steps.filter(s => s.status === 'completed').length || 0
+  const totalToolCount = activeTask?.steps.length || 0
 
   return (
     <Box flexDirection="column" height={stdout.rows}>
@@ -674,6 +753,7 @@ npm run build
           model={config.model || 'MiMo'}
           workingDir={process.cwd()}
           costSummary={costSummary}
+          contextUsage={contextUsage}
         />
       </Box>
 
@@ -695,14 +775,30 @@ npm run build
         )}
       </Box>
 
+      {/* Streaming metrics */}
+      {busy && (
+        <Box flexShrink={0} paddingX={1}>
+          <StreamingMetrics
+            isStreaming={!!isStreaming}
+            charCount={charCount}
+            activeToolCount={activeToolCount}
+            completedToolCount={completedToolCount}
+            totalToolCount={totalToolCount}
+          />
+        </Box>
+      )}
+
       {/* Bottom: approval prompt + user input */}
       <Box flexDirection="column" flexShrink={0}>
         {approval && (
           <ToolApproval
             toolName={approval.toolName}
             input={approval.input}
+            pendingCount={approvalQueue.length}
             onApprove={() => handleApproval(true)}
             onDeny={() => handleApproval(false)}
+            onAlwaysAllow={handleAlwaysAllow}
+            onAllowAll={handleAllowAll}
           />
         )}
         <UserInput
@@ -864,6 +960,12 @@ Sub-Agents:
 Keyboard:
   Ctrl+C          Cancel current operation / Exit
   Tab             Toggle shortcuts panel
+
+Approval:
+  y               Allow once
+  n               Deny once
+  a               Always allow (this session)
+  Y               Allow all pending
 
 Tips:
   - Use @filename to reference files

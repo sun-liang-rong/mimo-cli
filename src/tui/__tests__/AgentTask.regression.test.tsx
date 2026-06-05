@@ -57,7 +57,7 @@ describe('AgentTaskView with long paths (regression for garbled output)', () => 
     const out = lastFrame() ?? ''
     // Print raw output for visual inspection
     console.log('===RENDERED-START===\n' + out + '\n===RENDERED-END===')
-    expect(out).toMatch(/●/)
+    expect(out).toMatch(/✓/)
     expect(out).toMatch(/⎿/)
     expect(out).toContain('Write')
     expect(out).toContain('bubble-sort.ts')
@@ -97,13 +97,15 @@ describe('AgentTaskView with long paths (regression for garbled output)', () => 
     )
 
     const out = lastFrame() ?? ''
-    expect(out).toMatch(/●/)
+    expect(out).toMatch(/✓/)
     expect(out).toMatch(/⎿/)
     expect(out).toContain('Bash')
     expect(out).toContain('测试冒泡排序算法')
   })
 
   it('renders many tool calls with folding summary', () => {
+    // Use mixed tool types to avoid grouping (which would collapse them)
+    const toolTypes = ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Read', 'Write'] as const
     const steps = Array.from({ length: 20 }, (_, i) => ({
       id: `s${i}`,
       type: 'tool-call' as const,
@@ -114,7 +116,7 @@ describe('AgentTaskView with long paths (regression for garbled output)', () => 
       duration: 1,
       toolCall: {
         id: `tc${i}`,
-        name: 'Read',
+        name: toolTypes[i % toolTypes.length]!,
         args: {},
         summary: `file${i}.ts`,
         result: `content ${i}`,
@@ -139,6 +141,42 @@ describe('AgentTaskView with long paths (regression for garbled output)', () => 
     expect(out).toContain('file19.ts')
     // Earlier steps must be hidden in collapsed view.
     expect(out).not.toContain('file5.ts')
+  })
+
+  it('groups consecutive same-type tool calls', () => {
+    const steps = Array.from({ length: 5 }, (_, i) => ({
+      id: `s${i}`,
+      type: 'tool-call' as const,
+      status: i < 4 ? 'completed' as const : 'error' as const,
+      label: `Read file${i}`,
+      startedAt: i,
+      completedAt: i + 1,
+      duration: 1,
+      toolCall: {
+        id: `tc${i}`,
+        name: 'Read',
+        args: {},
+        summary: `file${i}.ts`,
+        result: `content ${i}`,
+        success: i < 4,
+        duration: 1,
+      },
+    }))
+
+    const task = makeTask({ steps })
+    const { lastFrame } = render(
+      <AgentTaskView
+        task={task}
+        expandedSteps={new Set()}
+        onToggleStep={() => {}}
+      />
+    )
+
+    const out = lastFrame() ?? ''
+    // Should show grouped display: "5× Read (4✓ 1✗)"
+    expect(out).toContain('5× Read')
+    expect(out).toContain('4✓')
+    expect(out).toContain('1✗')
   })
 
   it('renders a completed finalText with code block and CJK without mangling', () => {

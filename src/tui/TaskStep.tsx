@@ -4,6 +4,7 @@ import React from 'react'
 import { Box, Text } from 'ink'
 import type { TaskStep } from './types.js'
 import { Spinner } from './Spinner.js'
+import { TOOL_STATUS_COLORS, ICONS, formatDuration, truncateText } from './theme.js'
 
 interface TaskStepViewProps {
   step: TaskStep
@@ -24,7 +25,7 @@ export function TaskStepView({ step, expanded, onToggle }: TaskStepViewProps) {
       </Text>
       {step.duration != null && step.duration > 0 && (
         <Text color="gray" dimColor>
-          {' · '}{step.duration < 1000 ? `${step.duration}ms` : `${(step.duration / 1000).toFixed(1)}s`}
+          {' · '}{formatDuration(step.duration)}
         </Text>
       )}
     </Box>
@@ -37,20 +38,28 @@ function ToolCallInline({ step, expanded, onToggle }: { step: TaskStep; expanded
   const isError = step.status === 'error'
   const isDenied = step.status === 'denied'
 
-  let bulletColor = 'green'
-  if (isRunning) bulletColor = 'cyan'
-  else if (isError) bulletColor = 'red'
-  else if (isDenied) bulletColor = 'yellow'
+  let bulletColor: string = TOOL_STATUS_COLORS.completed
+  if (isRunning) bulletColor = TOOL_STATUS_COLORS.running
+  else if (isError) bulletColor = TOOL_STATUS_COLORS.error
+  else if (isDenied) bulletColor = TOOL_STATUS_COLORS.denied
 
   const header = (
     <Box>
-      {isRunning ? <Spinner color={bulletColor} /> : <Text color={bulletColor}>●</Text>}
+      {isRunning ? (
+        <Spinner color={bulletColor} />
+      ) : isError ? (
+        <Text color={TOOL_STATUS_COLORS.error}>{ICONS.error}</Text>
+      ) : isDenied ? (
+        <Text color={TOOL_STATUS_COLORS.denied}>{ICONS.warning}</Text>
+      ) : (
+        <Text color={bulletColor}>{ICONS.success}</Text>
+      )}
       <Text> </Text>
       <Text color={isError ? 'red' : isDenied ? 'yellow' : 'white'} wrap="wrap">
         {tool.name}({tool.summary})
       </Text>
       {step.duration != null && step.duration > 0 && (
-        <Text color="gray" dimColor>{' '}({formatDur(step.duration)})</Text>
+        <Text color="gray" dimColor>{' '}({formatDuration(step.duration)})</Text>
       )}
     </Box>
   )
@@ -74,14 +83,14 @@ function ToolCallInline({ step, expanded, onToggle }: { step: TaskStep; expanded
         {header}
         <Box paddingLeft={3} flexDirection="column">
           <Text color="gray" dimColor wrap="wrap">
-            ⎿ {truncate(tool.result, 2000)}
+            ⎿ {truncateText(tool.result, 2000)}
           </Text>
           {tool.args && Object.keys(tool.args).length > 0 && (
             <Box flexDirection="column" marginTop={0}>
               <Text color="gray" dimColor>⎿ Input:</Text>
               {Object.entries(tool.args).slice(0, 6).map(([key, value]) => (
                 <Text key={key} color="gray" dimColor wrap="wrap">
-                  {'  '}{key}: {truncate(String(value), 120)}
+                  {'  '}{key}: {truncateText(String(value), 120)}
                 </Text>
               ))}
             </Box>
@@ -96,8 +105,11 @@ function ToolCallInline({ step, expanded, onToggle }: { step: TaskStep; expanded
       {header}
       <Box paddingLeft={3}>
         <Text color={isError ? 'red' : 'gray'} dimColor wrap="wrap">
-          ⎿ {truncate(tool.result, 200)}
+          ⎿ {truncateText(tool.result, 200)}
         </Text>
+        {tool.result.length > 200 && (
+          <Text color="cyan" dimColor> (ctrl+o to expand)</Text>
+        )}
       </Box>
     </Box>
   )
@@ -105,19 +117,10 @@ function ToolCallInline({ step, expanded, onToggle }: { step: TaskStep; expanded
 
 function StepIcon({ status }: { status: TaskStep['status'] }) {
   switch (status) {
-    case 'running': return <Spinner color="yellow" />
-    case 'completed': return <Text color="green">●</Text>
-    case 'error': return <Text color="red">●</Text>
-    case 'denied': return <Text color="yellow">●</Text>
-    default: return <Text color="gray">·</Text>
+    case 'running': return <Spinner color={TOOL_STATUS_COLORS.running} />
+    case 'completed': return <Text color={TOOL_STATUS_COLORS.completed}>{ICONS.success}</Text>
+    case 'error': return <Text color={TOOL_STATUS_COLORS.error}>{ICONS.error}</Text>
+    case 'denied': return <Text color={TOOL_STATUS_COLORS.denied}>{ICONS.warning}</Text>
+    default: return <Text color="gray">{ICONS.pending}</Text>
   }
-}
-
-function formatDur(ms: number): string {
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
-}
-
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text
-  return text.slice(0, max) + '…'
 }

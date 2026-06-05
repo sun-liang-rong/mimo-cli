@@ -9,6 +9,7 @@ export interface TopStatusBarProps {
   workingDir: string
   branch?: string
   costSummary?: string
+  contextUsage?: number  // 0-100
 }
 
 function shortenDir(dir: string, maxLen: number): string {
@@ -26,7 +27,19 @@ function shortenDir(dir: string, maxLen: number): string {
   return prefix + display.slice(-room) + path.sep + base
 }
 
-export function TopStatusBar({ model, workingDir, branch, costSummary }: TopStatusBarProps) {
+function getContextColor(usage: number): string {
+  if (usage < 50) return 'green'
+  if (usage < 70) return 'yellow'
+  if (usage < 85) return 'red'
+  return 'red'
+}
+
+function getContextBar(usage: number, width: number = 10): string {
+  const filled = Math.round((usage / 100) * width)
+  return '█'.repeat(filled) + '░'.repeat(width - filled)
+}
+
+export function TopStatusBar({ model, workingDir, branch, costSummary, contextUsage }: TopStatusBarProps) {
   const { stdout } = useStdout()
   const width = stdout.columns || 80
   
@@ -34,7 +47,8 @@ export function TopStatusBar({ model, workingDir, branch, costSummary }: TopStat
   const modelWidth = model.length + 4
   const branchWidth = branch ? branch.length + 4 : 0
   const costWidth = costSummary ? costSummary.length + 4 : 0
-  const dirMaxWidth = Math.max(20, width - modelWidth - branchWidth - costWidth - 10)
+  const contextWidth = contextUsage != null ? 18 : 0  // "ctx ████░░░░░░ 45%"
+  const dirMaxWidth = Math.max(20, width - modelWidth - branchWidth - costWidth - contextWidth - 10)
   
   const dir = shortenDir(workingDir, dirMaxWidth)
 
@@ -63,6 +77,14 @@ export function TopStatusBar({ model, workingDir, branch, costSummary }: TopStat
         )}
       </Box>
       <Box>
+        {contextUsage != null && (
+          <>
+            <Text color="gray">ctx </Text>
+            <Text color={getContextColor(contextUsage)}>{getContextBar(contextUsage)}</Text>
+            <Text color="gray"> {contextUsage}%</Text>
+            {costSummary && <Text color="gray"> · </Text>}
+          </>
+        )}
         {costSummary && (
           <Text color="yellow">{costSummary}</Text>
         )}

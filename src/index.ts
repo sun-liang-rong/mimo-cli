@@ -118,7 +118,6 @@ program
     const app = render(React.createElement(App, { 
       config,
       projectContext: projectContext.fullContext,
-      enableVoice: options.voice,
     }))
 
     app.waitUntilExit().then(() => {

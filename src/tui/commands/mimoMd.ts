@@ -6,7 +6,7 @@ import {
   loadProjectContext,
   generateMimoMdTemplate,
   getProjectContextSummary,
-} from '../context/project.js'
+} from '../../context/project.js'
 
 export interface MimoMdCommandResult {
   handled: boolean

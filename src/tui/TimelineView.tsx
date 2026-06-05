@@ -1,5 +1,5 @@
-import React from 'react'
-import { Box, Text, useStdout } from 'ink'
+import React, { useState, useCallback, useEffect } from 'react'
+import { Box, Text, useStdout, useInput } from 'ink'
 import type { Timeline, TimelineItem } from './types.js'
 import { AgentTaskView } from './AgentTask.js'
 
@@ -18,9 +18,57 @@ export function TimelineView({ timeline, expandedSteps, onToggleStep }: Timeline
   const items = timeline.items
   const visibleItems = pickVisibleItems(items, availableHeight)
 
+  // Scroll state
+  const [scrollOffset, setScrollOffset] = useState(0)
+  const [isScrolling, setIsScrolling] = useState(false)
+
+  // Auto-scroll to bottom when new items arrive (unless user is scrolling)
+  useEffect(() => {
+    if (!isScrolling) {
+      setScrollOffset(0)
+    }
+  }, [items.length, isScrolling])
+
+  // Keyboard shortcuts for scrolling
+  useInput((input, key) => {
+    if (key.ctrl && key.upArrow) {
+      setScrollOffset(prev => Math.min(prev + 1, visibleItems.length - 1))
+      setIsScrolling(true)
+    } else if (key.ctrl && key.downArrow) {
+      setScrollOffset(prev => Math.max(prev - 1, 0))
+      if (scrollOffset <= 1) setIsScrolling(false)
+    } else if (key.pageUp) {
+      setScrollOffset(prev => Math.min(prev + 5, visibleItems.length - 1))
+      setIsScrolling(true)
+    } else if (key.pageDown) {
+      setScrollOffset(prev => Math.max(prev - 5, 0))
+      if (scrollOffset <= 5) setIsScrolling(false)
+    } else if (input === 'g' && key.ctrl) {
+      // Ctrl+G: Go to top (alternative to Home)
+      setScrollOffset(visibleItems.length - 1)
+      setIsScrolling(true)
+    } else if (input === 'e' && key.ctrl) {
+      // Ctrl+E already used for editor, skip
+    }
+  })
+
+  // Apply scroll offset - slice from the end
+  const scrolledItems = scrollOffset > 0
+    ? visibleItems.slice(0, visibleItems.length - scrollOffset)
+    : visibleItems
+
   return (
     <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>
-      {visibleItems.map(item => (
+      {/* Scroll indicator */}
+      {isScrolling && scrollOffset > 0 && (
+        <Box justifyContent="center">
+          <Text color="cyan" dimColor>
+            ▲ Scrolling... ({scrollOffset} items above) ▲
+          </Text>
+        </Box>
+      )}
+
+      {scrolledItems.map(item => (
         <TimelineItemView
           key={item.id}
           item={item}
@@ -28,6 +76,15 @@ export function TimelineView({ timeline, expandedSteps, onToggleStep }: Timeline
           onToggleStep={onToggleStep}
         />
       ))}
+
+      {/* New messages indicator */}
+      {isScrolling && (
+        <Box justifyContent="center" marginTop={1}>
+          <Text color="green">
+            ▼ Press End or Ctrl+Down to see latest ▼
+          </Text>
+        </Box>
+      )}
     </Box>
   )
 }

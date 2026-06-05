@@ -7,22 +7,34 @@ import { formatInputPreview } from './ToolCallBlock.js'
 interface ToolApprovalProps {
   toolName: string
   input: Record<string, unknown>
+  pendingCount?: number
   onApprove: () => void
   onDeny: () => void
+  onAlwaysAllow: () => void
+  onAllowAll: () => void
 }
 
 export function ToolApproval({
   toolName,
   input,
+  pendingCount = 0,
   onApprove,
   onDeny,
+  onAlwaysAllow,
+  onAllowAll,
 }: ToolApprovalProps) {
   useInput((inputKey, key) => {
-    if (inputKey === 'y' || inputKey === 'Y' || key.return) {
+    if (inputKey === 'y' || key.return) {
       onApprove()
     }
-    if (inputKey === 'n' || inputKey === 'N' || key.escape) {
+    if (inputKey === 'n' || key.escape) {
       onDeny()
+    }
+    if (inputKey === 'a') {
+      onAlwaysAllow()
+    }
+    if (inputKey === 'Y') {
+      onAllowAll()
     }
   })
 
@@ -32,6 +44,9 @@ export function ToolApproval({
     <Box flexDirection="column" paddingX={1} marginY={1}>
       <Box>
         <Text color="yellow" bold>⚠ Permission requested</Text>
+        {pendingCount > 1 && (
+          <Text color="gray"> ({pendingCount} pending)</Text>
+        )}
       </Box>
       <Box marginTop={0} paddingLeft={2}>
         <Text>
@@ -50,10 +65,21 @@ export function ToolApproval({
       <Box marginTop={0} paddingLeft={2}>
         <Text>
           <Text color="gray">  </Text>
-          <Text bold color="green" inverse> yes </Text>
+          <Text bold color="green" inverse> y </Text>
+          <Text color="gray"> allow </Text>
           <Text color="gray">  </Text>
-          <Text bold color="red" inverse> no </Text>
-          <Text color="gray">  (y/n)</Text>
+          <Text bold color="red" inverse> n </Text>
+          <Text color="gray"> deny </Text>
+          <Text color="gray">  </Text>
+          <Text bold color="yellow" inverse> a </Text>
+          <Text color="gray"> always allow </Text>
+          {pendingCount > 1 && (
+            <>
+              <Text color="gray">  </Text>
+              <Text bold color="cyan" inverse> Y </Text>
+              <Text color="gray"> allow all ({pendingCount})</Text>
+            </>
+          )}
         </Text>
       </Box>
     </Box>

@@ -2,6 +2,10 @@
 
 import React, { useState, useCallback } from 'react'
 import { Box, Text, useInput } from 'ink'
+import { spawn } from 'child_process'
+import fs from 'fs/promises'
+import os from 'os'
+import path from 'path'
 
 interface UserInputProps {
   onSubmit: (text: string) => void
@@ -10,6 +14,40 @@ interface UserInputProps {
   showShortcuts?: boolean
   onToggleShortcuts?: () => void
   onCancel?: () => void
+}
+
+async function openEditor(initialContent: string = ''): Promise<string | null> {
+  const editor = process.env.EDITOR || process.env.VISUAL || (process.platform === 'win32' ? 'notepad' : 'vim')
+  const tmpFile = path.join(os.tmpdir(), `mimo-input-${Date.now()}.md`)
+  
+  try {
+    await fs.writeFile(tmpFile, initialContent, 'utf-8')
+    
+    return new Promise((resolve, reject) => {
+      const child = spawn(editor, [tmpFile], {
+        stdio: 'inherit',
+        shell: true,
+      })
+      
+      child.on('exit', async (code) => {
+        try {
+          const content = await fs.readFile(tmpFile, 'utf-8')
+          await fs.unlink(tmpFile).catch(() => {})
+          resolve(content.trim() || null)
+        } catch (err) {
+          reject(err)
+        }
+      })
+      
+      child.on('error', async (err) => {
+        await fs.unlink(tmpFile).catch(() => {})
+        reject(err)
+      })
+    })
+  } catch (err) {
+    await fs.unlink(tmpFile).catch(() => {})
+    throw err
+  }
 }
 
 export function UserInput({
@@ -24,6 +62,7 @@ export function UserInput({
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
   const [draft, setDraft] = useState<string[] | null>(null)
+  const [editorOpen, setEditorOpen] = useState(false)
 
   const currentLine = lines.length - 1
   const text = lines.join('\n')
@@ -126,6 +165,24 @@ export function UserInput({
 
       if (key.ctrl && input === 'c') return
 
+      // Ctrl+E: Open external editor
+      if (key.ctrl && input === 'e') {
+        setEditorOpen(true)
+        openEditor(text)
+          .then((content) => {
+            if (content) {
+              setLines(content.split('\n'))
+            }
+          })
+          .catch((err) => {
+            console.error('Failed to open editor:', err)
+          })
+          .finally(() => {
+            setEditorOpen(false)
+          })
+        return
+      }
+
       if (input && !key.ctrl && !key.meta) {
         updateCurrentLine((line) => line + input)
       }
@@ -147,6 +204,7 @@ export function UserInput({
           <Text color="gray">  Enter         Send message</Text>
           <Text color="gray">  Shift+Enter   New line</Text>
           <Text color="gray">  ↑ / ↓         Navigate history</Text>
+          <Text color="gray">  Ctrl+E        Open external editor</Text>
           <Text color="gray">  Esc           Cancel current request</Text>
           <Text color="gray">  Ctrl+C        Exit (or cancel if running)</Text>
           <Text color="gray">  /             Open command palette</Text>
@@ -183,6 +241,13 @@ export function UserInput({
           <Box marginTop={0}>
             <Text color="gray" dimColor>
               {text || 'MiMo is working…'} <Text color="cyan">esc to interrupt</Text>
+            </Text>
+          </Box>
+        )}
+        {editorOpen && (
+          <Box marginTop={0}>
+            <Text color="yellow" dimColor>
+              Editor open... Save and close to continue
             </Text>
           </Box>
         )}

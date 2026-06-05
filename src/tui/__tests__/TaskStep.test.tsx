@@ -38,7 +38,7 @@ describe('TaskStepView', () => {
     const { lastFrame } = render(
       <TaskStepView step={makeStep({ status: 'completed' })} expanded={false} onToggle={() => {}} />
     )
-    expect(lastFrame()).toMatch(/●/)
+    expect(lastFrame()).toMatch(/✓/)
   })
 
   it('should render running spinner', () => {
@@ -52,7 +52,7 @@ describe('TaskStepView', () => {
     const { lastFrame } = render(
       <TaskStepView step={makeStep({ status: 'error' })} expanded={false} onToggle={() => {}} />
     )
-    expect(lastFrame()).toMatch(/●/)
+    expect(lastFrame()).toMatch(/✗/)
   })
 
   it('should render thinking step', () => {

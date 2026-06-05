@@ -1,11 +1,13 @@
 // Agent task 渲染 - Claude Code 风格: 无外框, 内联展示, 折叠旧 steps
 
-import React, { useState } from 'react'
+import React, { useState, useMemo } from 'react'
 import { Box, Text } from 'ink'
-import type { AgentTaskItem } from './types.js'
+import type { AgentTaskItem, TaskStep } from './types.js'
 import { TaskStepView } from './TaskStep.js'
 import { Spinner } from './Spinner.js'
 import { Markdown } from './Markdown.js'
+import { ErrorDisplay } from './ErrorDisplay.js'
+import { ToolTimeline } from './ToolTimeline.js'
 
 interface AgentTaskViewProps {
   task: AgentTaskItem
@@ -18,6 +20,59 @@ interface AgentTaskViewProps {
 const MAX_VISIBLE_STEPS = 8
 // Cap on the number of lines the streaming text block may occupy.
 const MAX_STREAMING_LINES = 6
+
+interface ToolGroup {
+  toolName: string
+  steps: TaskStep[]
+  successCount: number
+  errorCount: number
+}
+
+function groupToolCalls(steps: TaskStep[]): Array<{ type: 'single'; step: TaskStep } | { type: 'group'; group: ToolGroup }> {
+  const result: Array<{ type: 'single'; step: TaskStep } | { type: 'group'; group: ToolGroup }> = []
+  let i = 0
+
+  while (i < steps.length) {
+    const step = steps[i]!
+    if (step.type !== 'tool-call' || !step.toolCall) {
+      result.push({ type: 'single', step })
+      i++
+      continue
+    }
+
+    const toolName = step.toolCall.name
+    const groupSteps: TaskStep[] = [step]
+    let successCount = step.status === 'completed' ? 1 : 0
+    let errorCount = step.status === 'error' ? 1 : 0
+
+    // Look ahead for consecutive same-type tool calls
+    let j = i + 1
+    while (j < steps.length) {
+      const next = steps[j]!
+      if (next.type !== 'tool-call' || !next.toolCall || next.toolCall.name !== toolName) {
+        break
+      }
+      groupSteps.push(next)
+      if (next.status === 'completed') successCount++
+      else if (next.status === 'error') errorCount++
+      j++
+    }
+
+    // Only group if 2+ consecutive same-type calls
+    if (groupSteps.length >= 2) {
+      result.push({
+        type: 'group',
+        group: { toolName, steps: groupSteps, successCount, errorCount },
+      })
+      i = j
+    } else {
+      result.push({ type: 'single', step })
+      i++
+    }
+  }
+
+  return result
+}
 
 function statusLabel(status: AgentTaskItem['status'], phase: AgentTaskItem['phase']): { text: string; color: string } {
   switch (status) {
@@ -57,6 +112,9 @@ export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskVi
   const visibleSteps = showAllSteps ? allSteps : allSteps.slice(-MAX_VISIBLE_STEPS)
   const hiddenCount = allSteps.length - visibleSteps.length
 
+  // Group consecutive same-type tool calls
+  const groupedSteps = useMemo(() => groupToolCalls(visibleSteps), [visibleSteps])
+
   return (
     <Box flexDirection="column" marginY={1}>
       {/* Status header */}
@@ -67,9 +125,6 @@ export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskVi
           <Text color={statusColor}>{task.status === 'completed' ? '✓' : task.status === 'error' ? '✗' : '·'}</Text>
         )}
         <Text color={statusColor}> {statusText}</Text>
-        {task.status === 'error' && task.error && (
-          <Text color="red"> — {task.error}</Text>
-        )}
         {task.status === 'completed' && toolCount > 0 && (
           <Text color="gray" dimColor>
             {' · '}{toolCount} tool call{toolCount === 1 ? '' : 's'}
@@ -78,17 +133,63 @@ export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskVi
         )}
       </Box>
 
+      {/* Structured error display */}
+      {task.status === 'error' && task.error && (
+        <Box marginLeft={2} marginTop={1}>
+          <ErrorDisplay error={task.error} />
+        </Box>
+      )}
+
       {/* Tool calls (inline, no border) */}
-      {visibleSteps.length > 0 && (
+      {groupedSteps.length > 0 && (
         <Box flexDirection="column" marginTop={1} paddingLeft={2}>
-          {visibleSteps.map(step => (
-            <TaskStepView
-              key={step.id}
-              step={step}
-              expanded={expandedSteps.has(step.id)}
-              onToggle={() => onToggleStep(step.id)}
-            />
-          ))}
+          {groupedSteps.map((item, idx) => {
+            if (item.type === 'single') {
+              return (
+                <TaskStepView
+                  key={item.step.id}
+                  step={item.step}
+                  expanded={expandedSteps.has(item.step.id)}
+                  onToggle={() => onToggleStep(item.step.id)}
+                />
+              )
+            }
+
+            // Group display
+            const { toolName, steps, successCount, errorCount } = item.group
+            const allCompleted = steps.every(s => s.status === 'completed' || s.status === 'error')
+            const anyRunning = steps.some(s => s.status === 'running')
+
+            return (
+              <Box key={`group-${idx}`} flexDirection="column">
+                <Box>
+                  {anyRunning ? (
+                    <Spinner color="cyan" />
+                  ) : (
+                    <Text color={errorCount > 0 ? 'yellow' : 'green'}>●</Text>
+                  )}
+                  <Text> </Text>
+                  <Text bold>{steps.length}× {toolName}</Text>
+                  <Text color="gray" dimColor>
+                    {' '}({successCount}✓{errorCount > 0 ? ` ${errorCount}✗` : ''})
+                  </Text>
+                </Box>
+                {/* Show individual steps when expanded */}
+                {expandedSteps.has(steps[0]!.id) && (
+                  <Box flexDirection="column" paddingLeft={2}>
+                    {steps.map(step => (
+                      <TaskStepView
+                        key={step.id}
+                        step={step}
+                        expanded={expandedSteps.has(step.id)}
+                        onToggle={() => onToggleStep(step.id)}
+                      />
+                    ))}
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
           {hiddenCount > 0 && (
             <Box marginTop={0}>
               <Text color="cyan" dimColor>
@@ -97,6 +198,13 @@ export function AgentTaskView({ task, expandedSteps, onToggleStep }: AgentTaskVi
               </Text>
             </Box>
           )}
+        </Box>
+      )}
+
+      {/* Tool timeline visualization (only when completed with multiple visible tools) */}
+      {task.status === 'completed' && toolCount >= 3 && visibleSteps.length <= MAX_VISIBLE_STEPS && (
+        <Box marginTop={1} paddingLeft={2}>
+          <ToolTimeline steps={visibleSteps} />
         </Box>
       )}
 
