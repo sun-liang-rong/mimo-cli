@@ -1,6 +1,6 @@
 import * as readline from 'readline';
 import chalk from 'chalk';
-import { MiMoClient, Message } from '../ai/client';
+import { MiMoClient, Message, ToolCall } from '../ai/client';
 import { ConversationManager } from '../ai/conversation';
 import { StreamRenderer } from '../ai/streaming';
 import { ToolRegistry } from '../tools/registry';
@@ -123,36 +123,50 @@ export class InteractiveCLI {
   }
 
   private async processAIResponse(): Promise<void> {
-    const messages = this.conversation.getMessages();
-    const tools = this.toolRegistry.getDefinitions();
-    
     this.renderer.startThinking();
-    
+
     try {
-      let shouldContinue = true;
-      let fullResponse = '';
-      
-      while (shouldContinue) {
-        fullResponse = '';
-        
-        console.log(chalk.cyan('\nMiMo: '));
-        
-        for await (const chunk of this.client.streamChat(messages, tools)) {
-          this.renderer.stopThinking();
-          this.renderer.writeChunk(chunk);
-          fullResponse += chunk;
+      let hasToolCalls = true;
+
+      while (hasToolCalls) {
+        const messages = this.conversation.getMessages();
+        const tools = this.toolRegistry.getDefinitions();
+
+        const response = await this.client.chat(messages, tools);
+        this.renderer.stopThinking();
+
+        if (response.content) {
+          console.log(chalk.cyan('\nMiMo: ') + response.content);
+          this.conversation.addMessage({
+            role: 'assistant',
+            content: response.content
+          });
         }
-        
-        this.renderer.writeNewline();
-        
-        this.conversation.addMessage({
-          role: 'assistant',
-          content: fullResponse
-        });
-        
-        shouldContinue = false;
+
+        if (response.toolCalls && response.toolCalls.length > 0) {
+          if (!response.content) {
+            this.conversation.addMessage({
+              role: 'assistant',
+              content: null
+            });
+          }
+
+          for (const toolCall of response.toolCalls) {
+            const args = JSON.parse(toolCall.function.arguments);
+            console.log(formatToolCall(toolCall.function.name, args));
+
+            const result = await this.toolRegistry.execute(toolCall.function.name, args);
+            console.log(formatToolResult(result));
+
+            this.conversation.addToolCall(toolCall);
+            this.conversation.addToolResult(toolCall.id, JSON.stringify(result));
+          }
+        } else {
+          hasToolCalls = false;
+        }
       }
     } catch (error) {
+      this.renderer.stopThinking();
       this.renderer.writeError(error instanceof Error ? error.message : String(error));
     }
   }
