@@ -6,6 +6,7 @@ export interface MiMoConfig {
   model: string
   maxTokens: number
   temperature: number
+  allowInsecure?: boolean
 }
 
 export interface Message {
@@ -25,9 +26,20 @@ export interface ToolCall {
   }
 }
 
+export interface TokenUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  prompt_tokens_details?: {
+    cache_creation_input_tokens?: number
+    cached_tokens?: number
+  }
+}
+
 export interface StreamEvent {
   type: 'text' | 'tool_call' | 'done' | 'error'
   content?: string
   tool_call?: ToolCall
   error?: string
+  usage?: TokenUsage
 }

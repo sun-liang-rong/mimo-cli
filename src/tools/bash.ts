@@ -2,9 +2,12 @@
 
 import { exec } from 'child_process'
 import type { ToolDefinition } from './types.js'
+import { PermissionManager } from '../permissions/manager.js'
 
 const DEFAULT_TIMEOUT = 120000 // 2 minutes
 const MAX_TIMEOUT = 600000 // 10 minutes
+
+const permissionManager = new PermissionManager()
 
 export const bashTool: ToolDefinition = {
   name: 'Bash',
@@ -25,11 +28,22 @@ export const bashTool: ToolDefinition = {
         description:
           'Optional timeout in milliseconds (default 120000, max 600000)',
       },
+      abort_signal: {
+        type: 'boolean',
+        description:
+          'Optional signal to abort the command execution',
+      },
     },
     required: ['command'],
   },
   requiresApproval: true,
   async execute(input) {
+    // Check permission before executing
+    const permLevel = permissionManager.check('Bash', { command: input.command })
+    if (permLevel === 'deny') {
+      return { success: false, output: '', error: 'Command blocked by permission rules' }
+    }
+
     const timeout = Math.min(
       input.timeout || DEFAULT_TIMEOUT,
       MAX_TIMEOUT
@@ -58,6 +72,11 @@ export const bashTool: ToolDefinition = {
           }
         }
       )
+
+      // Handle abort_signal
+      if (input.abort_signal && child) {
+        child.kill('SIGTERM')
+      }
 
       // 确保进程在超时时被杀死
       if (child) {

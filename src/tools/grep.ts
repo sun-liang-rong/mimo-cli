@@ -1,7 +1,45 @@
 // Grep 工具 - 内容搜索
 
-import { exec } from 'child_process'
+import { spawn } from 'child_process'
 import type { ToolDefinition } from './types.js'
+
+const MAX_BYTES = 1024 * 100 // 100KB
+const MAX_LINES = 500
+
+function runSearch(args: string[], lineCount: number): Promise<{ output: string; truncated: boolean; linesShown: number }> {
+  return new Promise((resolve) => {
+    const child = spawn(args[0], args.slice(1), { stdio: ['ignore', 'pipe', 'ignore'] })
+
+    let output = ''
+    let truncated = false
+    let bytes = 0
+    let lines = lineCount
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (truncated) return
+      bytes += chunk.length
+      lines += (chunk.toString().match(/\n/g) || []).length
+
+      if (bytes >= MAX_BYTES || lines >= MAX_LINES) {
+        truncated = true
+        // trim to limit
+        output += chunk.toString().slice(0, MAX_BYTES - (bytes - chunk.length))
+        // kill rg — need to kill the whole process group
+        try { child.kill('SIGTERM') } catch {}
+      } else {
+        output += chunk.toString()
+      }
+    })
+
+    child.on('close', () => {
+      resolve({ output: output.trimEnd(), truncated, linesShown: lines })
+    })
+
+    child.on('error', () => {
+      resolve({ output: '', truncated: false, linesShown: 0 })
+    })
+  })
+}
 
 export const grepTool: ToolDefinition = {
   name: 'Grep',
@@ -35,31 +73,39 @@ export const grepTool: ToolDefinition = {
   async execute(input) {
     try {
       const searchPath = input.path || '.'
-      const contextFlag = input.context ? `-C ${input.context}` : ''
-      const globFlag = input.glob ? `--glob "${input.glob}"` : ''
+      const contextArgs = input.context ? ['-C', String(input.context)] : []
+      const globArgs = input.glob ? ['--glob', input.glob] : []
 
-      // 尝试使用 ripgrep，如果不可用则回退到 grep
-      const command = `rg --no-heading -n ${contextFlag} ${globFlag} "${input.pattern}" ${searchPath} 2>/dev/null || grep -rn ${contextFlag} ${globFlag} "${input.pattern}" ${searchPath} 2>/dev/null`
+      // Build rg args
+      const rgArgs = ['--no-heading', '-n', ...contextArgs, ...globArgs, input.pattern, searchPath]
 
-      return new Promise((resolve) => {
-        exec(
-          command,
-          { encoding: 'utf-8', maxBuffer: 1024 * 1024 * 10 },
-          (error, stdout, stderr) => {
-            if (error && !stdout) {
-              resolve({
-                success: true,
-                output: 'No matches found.',
-              })
-            } else {
-              resolve({
-                success: true,
-                output: stdout || 'No matches found.',
-              })
-            }
-          }
-        )
-      })
+      // Try ripgrep first, fall back to grep
+      const result = await runSearch(['rg', ...rgArgs], 0)
+
+      if (!result.output) {
+        // rg produced no output or failed — fall back to grep
+        const grepGlobArgs = input.glob ? ['--include', input.glob] : []
+        const grepArgs = ['-rn', ...contextArgs, ...grepGlobArgs, input.pattern, searchPath]
+        const grepResult = await runSearch(['grep', ...grepArgs], 0)
+
+        if (!grepResult.output) {
+          return { success: true, output: 'No matches found.' }
+        }
+
+        let output = grepResult.output
+        if (grepResult.truncated) {
+          const matchCount = (grepResult.output.match(/\n/g) || []).length
+          output += `\n[truncated - showing first ${matchCount} results]`
+        }
+        return { success: true, output }
+      }
+
+      let output = result.output
+      if (result.truncated) {
+        const matchCount = (result.output.match(/\n/g) || []).length
+        output += `\n[truncated - showing first ${matchCount} results]`
+      }
+      return { success: true, output }
     } catch (error: any) {
       return {
         success: false,

@@ -43,12 +43,60 @@ export class SessionStore {
   async save(session: SessionData): Promise<void> {
     await fs.mkdir(this.config.sessionDir, { recursive: true })
     session.updatedAt = new Date().toISOString()
-    await fs.writeFile(
-      this.getSessionPath(session.id),
-      JSON.stringify(session, null, 2),
-      'utf-8'
-    )
+    const sessionPath = this.getSessionPath(session.id)
+    const tmpPath = sessionPath + '.tmp'
+    const lockPath = sessionPath + '.lock'
+
+    await this.acquireLock(lockPath)
+    try {
+      await fs.writeFile(tmpPath, JSON.stringify(session, null, 2), 'utf-8')
+      await fs.rename(tmpPath, sessionPath)
+    } finally {
+      await this.releaseLock(lockPath)
+    }
+
     await this.pruneOldSessions()
+  }
+
+  /** 获取文件锁，最多等待 5 秒 */
+  private async acquireLock(lockPath: string): Promise<void> {
+    const maxWait = 5000
+    const interval = 50
+    const deadline = Date.now() + maxWait
+
+    while (Date.now() < deadline) {
+      try {
+        // Exclusive create — fails if lock already exists
+        const fd = await fs.open(lockPath, 'wx')
+        await fd.close()
+        return
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+          // Lock held by another writer — check if stale (>5s old)
+          try {
+            const stat = await fs.stat(lockPath)
+            if (Date.now() - stat.mtimeMs > maxWait) {
+              await fs.unlink(lockPath).catch(() => {})
+              continue
+            }
+          } catch {
+            // Lock disappeared — retry immediately
+            continue
+          }
+          await new Promise(resolve => setTimeout(resolve, interval))
+        } else {
+          throw err
+        }
+      }
+    }
+
+    // Timed out — remove stale lock and proceed
+    await fs.unlink(lockPath).catch(() => {})
+  }
+
+  /** 释放文件锁 */
+  private async releaseLock(lockPath: string): Promise<void> {
+    await fs.unlink(lockPath).catch(() => {})
   }
 
   /** 加载会话 */

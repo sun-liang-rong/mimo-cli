@@ -9,75 +9,169 @@ export interface SearchResult {
 }
 
 /**
- * 使用 DuckDuckGo Instant Answer API 搜索
- * 注意: 这是一个简化版本，生产环境建议使用 SearXNG 或其他搜索 API
+ * Brave Search API (primary, needs BRAVE_API_KEY env var)
  */
-async function searchDuckDuckGo(query: string, maxResults: number = 5): Promise<SearchResult[]> {
+async function searchBrave(query: string, maxResults: number = 5): Promise<SearchResult[]> {
+  const apiKey = process.env.BRAVE_API_KEY
+  if (!apiKey) {
+    throw new Error('BRAVE_API_KEY environment variable is not set')
+  }
+
   const encodedQuery = encodeURIComponent(query)
-  const url = `https://api.duckduckgo.com/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1`
-  
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'MiMo-CLI/0.1.0 (AI Coding Assistant)',
-      },
-    })
-    
-    if (!response.ok) {
-      throw new Error(`Search failed: ${response.status}`)
-    }
-    
-    const data = await response.json() as any
-    const results: SearchResult[] = []
-    
-    // 提取 Abstract (如果有的话)
-    if (data.Abstract) {
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodedQuery}&count=${maxResults}`
+
+  const response = await fetch(url, {
+    headers: {
+      'Accept': 'application/json',
+      'Accept-Encoding': 'gzip',
+      'X-Subscription-Token': apiKey,
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Brave Search failed: ${response.status} ${response.statusText}`)
+  }
+
+  const data = await response.json() as any
+  const results: SearchResult[] = []
+
+  if (data.web?.results) {
+    for (const item of data.web.results.slice(0, maxResults)) {
       results.push({
-        title: data.Heading || 'DuckDuckGo Instant Answer',
-        url: data.AbstractURL || '',
-        snippet: data.Abstract,
+        title: item.title || '',
+        url: item.url || '',
+        snippet: item.description || '',
       })
     }
-    
-    // 提取 RelatedTopics
-    if (data.RelatedTopics) {
-      for (const topic of data.RelatedTopics.slice(0, maxResults - results.length)) {
-        if (topic.Text && topic.FirstURL) {
-          results.push({
-            title: topic.Text.split(' - ')[0] || topic.Text.slice(0, 50),
-            url: topic.FirstURL,
-            snippet: topic.Text,
-          })
-        }
-      }
-    }
-    
-    return results
-  } catch (error: any) {
-    throw new Error(`Search failed: ${error.message}`)
   }
+
+  return results
 }
 
 /**
- * 使用 Wikipedia API 搜索 (作为备用)
+ * DuckDuckGo HTML scraping fallback (no API key needed)
+ * Fetches the lite HTML version and parses results with regex.
+ */
+async function searchDuckDuckGoHTML(query: string, maxResults: number = 5): Promise<SearchResult[]> {
+  const encodedQuery = encodeURIComponent(query)
+  const url = `https://lite.duckduckgo.com/lite/?q=${encodedQuery}`
+
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0',
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`DuckDuckGo HTML search failed: ${response.status}`)
+  }
+
+  const html = await response.text()
+  const results: SearchResult[] = []
+
+  // DuckDuckGo lite page uses a table layout.
+  // Result links: <a rel="nofollow" href="URL" class='result-link'>TITLE</a>
+  // Snippets in <td class='result-snippet'>...</td>
+  //
+  // We try multiple patterns to be robust across DDG HTML variations.
+
+  // Pattern 1: Match result-link anchors and their following snippet cells
+  const resultLinkRegex = /<a[^>]*rel="nofollow"[^>]*href="([^"]*)"[^>]*class=['"]result-link['"][^>]*>([^<]*)<\/a>/gi
+  const snippetRegex = /<td[^>]*class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/gi
+
+  // Extract all links first
+  const links: { url: string; title: string }[] = []
+  let match: RegExpExecArray | null
+
+  while ((match = resultLinkRegex.exec(html)) !== null) {
+    links.push({ url: match[1], title: stripHtml(match[2]) })
+  }
+
+  // Extract all snippets
+  const snippets: string[] = []
+  while ((match = snippetRegex.exec(html)) !== null) {
+    snippets.push(stripHtml(match[1]))
+  }
+
+  // Pair them up
+  for (let i = 0; i < Math.min(links.length, maxResults); i++) {
+    results.push({
+      title: links[i].title,
+      url: links[i].url,
+      snippet: snippets[i] || '',
+    })
+  }
+
+  // Fallback pattern: if the above didn't match, try a broader pattern
+  // DDG lite sometimes uses slightly different markup
+  if (results.length === 0) {
+    // Try matching any <a> with an href that looks like a result link (not a DDG internal link)
+    const broadLinkRegex = /<a[^>]*href="(https?:\/\/[^"]*)"[^>]*>([^<]{4,})<\/a>/gi
+    const broadSnippetRegex = /<td[^>]*class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/gi
+
+    const broadLinks: { url: string; title: string }[] = []
+    while ((match = broadLinkRegex.exec(html)) !== null) {
+      const href = match[1]
+      // Skip DDG internal links
+      if (href.includes('duckduckgo.com') || href.includes('duck.co')) continue
+      broadLinks.push({ url: href, title: stripHtml(match[2]) })
+    }
+
+    const broadSnippets: string[] = []
+    while ((match = broadSnippetRegex.exec(html)) !== null) {
+      broadSnippets.push(stripHtml(match[1]))
+    }
+
+    for (let i = 0; i < Math.min(broadLinks.length, maxResults); i++) {
+      results.push({
+        title: broadLinks[i].title,
+        url: broadLinks[i].url,
+        snippet: broadSnippets[i] || '',
+      })
+    }
+  }
+
+  if (results.length === 0) {
+    throw new Error('No results parsed from DuckDuckGo HTML response')
+  }
+
+  return results
+}
+
+/** Strip HTML tags and decode basic entities */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * 使用 Wikipedia API 搜索 (作为最终备用)
  */
 async function searchWikipedia(query: string, maxResults: number = 3): Promise<SearchResult[]> {
   const encodedQuery = encodeURIComponent(query)
   const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodedQuery}`
-  
+
   try {
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'MiMo-CLI/0.1.0 (AI Coding Assistant)',
       },
     })
-    
+
     if (!response.ok) {
       return []
     }
-    
+
     const data = await response.json() as any
-    
+
     if (data.extract) {
       return [{
         title: data.title || query,
@@ -85,7 +179,7 @@ async function searchWikipedia(query: string, maxResults: number = 3): Promise<S
         snippet: data.extract.slice(0, 300),
       }]
     }
-    
+
     return []
   } catch {
     return []
@@ -110,8 +204,8 @@ export const webSearchTool: ToolDefinition = {
       },
       search_engine: {
         type: 'string',
-        enum: ['duckduckgo', 'wikipedia', 'auto'],
-        description: 'Search engine to use (default: auto)',
+        enum: ['brave', 'duckduckgo', 'wikipedia', 'auto'],
+        description: 'Search engine to use (default: auto). Auto priority: Brave (if BRAVE_API_KEY set) -> DuckDuckGo -> Wikipedia',
       },
     },
     required: ['query'],
@@ -121,7 +215,7 @@ export const webSearchTool: ToolDefinition = {
     const query = input.query
     const maxResults = Math.min(input.max_results || 5, 10)
     const searchEngine = input.search_engine || 'auto'
-    
+
     if (!query || query.trim().length === 0) {
       return {
         success: false,
@@ -129,30 +223,46 @@ export const webSearchTool: ToolDefinition = {
         error: 'Search query cannot be empty',
       }
     }
-    
+
     try {
       let results: SearchResult[] = []
-      
-      if (searchEngine === 'wikipedia') {
-        results = await searchWikipedia(query, maxResults)
+
+      if (searchEngine === 'brave') {
+        results = await searchBrave(query, maxResults)
       } else if (searchEngine === 'duckduckgo') {
-        results = await searchDuckDuckGo(query, maxResults)
+        results = await searchDuckDuckGoHTML(query, maxResults)
+      } else if (searchEngine === 'wikipedia') {
+        results = await searchWikipedia(query, maxResults)
       } else {
-        // auto: 先尝试 DuckDuckGo，失败则用 Wikipedia
-        try {
-          results = await searchDuckDuckGo(query, maxResults)
-        } catch {
-          results = await searchWikipedia(query, maxResults)
+        // auto: Brave (if key available) -> DuckDuckGo HTML -> Wikipedia
+        if (process.env.BRAVE_API_KEY) {
+          try {
+            results = await searchBrave(query, maxResults)
+          } catch {
+            // Brave failed, try DuckDuckGo
+            try {
+              results = await searchDuckDuckGoHTML(query, maxResults)
+            } catch {
+              results = await searchWikipedia(query, maxResults)
+            }
+          }
+        } else {
+          // No Brave key, try DuckDuckGo first
+          try {
+            results = await searchDuckDuckGoHTML(query, maxResults)
+          } catch {
+            results = await searchWikipedia(query, maxResults)
+          }
         }
       }
-      
+
       if (results.length === 0) {
         return {
           success: true,
           output: `No results found for: "${query}"`,
         }
       }
-      
+
       // 格式化输出
       const output = results.map((r, i) => {
         return [
@@ -161,7 +271,7 @@ export const webSearchTool: ToolDefinition = {
           r.snippet,
         ].join('\n')
       }).join('\n\n---\n\n')
-      
+
       return {
         success: true,
         output: `Found ${results.length} results for: "${query}"\n\n${output}`,

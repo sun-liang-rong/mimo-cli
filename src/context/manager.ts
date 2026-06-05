@@ -1,36 +1,13 @@
-// Context Window Manager - token 计数 + 滑动窗口截断
+// Context Window Manager - token 计数 + 滑动窗口截断 + 智能压缩
 
 import type { Message } from '../api/types.js'
+import { estimateTokens, estimateMessageTokens, estimateTotalTokens } from '../utils/tokens.js'
+import { getContextWindow } from '../config/models.js'
 
-/** 简单 token 估算: 1 token ≈ 4 字符 (英文) / 1 token ≈ 2 字符 (中文) */
-export function estimateTokens(text: string): number {
-  if (!text) return 0
-  let count = 0
-  for (const ch of text) {
-    // CJK 字符算 0.5 token, 其他算 0.25 token
-    count += ch.charCodeAt(0) > 0x7f ? 0.5 : 0.25
-  }
-  return Math.ceil(count)
-}
+// Re-export token utilities for tests and convenience
+export { estimateTokens, estimateMessageTokens as messageTokens, estimateTotalTokens as totalTokens } from '../utils/tokens.js'
 
-/** 计算单条 message 的 token 数 */
-export function messageTokens(msg: Message): number {
-  let tokens = 4 // role + formatting overhead
-  if (msg.content) tokens += estimateTokens(msg.content)
-  if (msg.tool_calls) {
-    for (const tc of msg.tool_calls) {
-      tokens += estimateTokens(tc.function.name) + estimateTokens(tc.function.arguments) + 4
-    }
-  }
-  if (msg.tool_call_id) tokens += estimateTokens(msg.tool_call_id)
-  if (msg.name) tokens += estimateTokens(msg.name)
-  return tokens
-}
-
-/** 计算消息数组总 token 数 */
-export function totalTokens(messages: Message[]): number {
-  return messages.reduce((sum, msg) => sum + messageTokens(msg), 0)
-}
+// ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ContextManagerConfig {
   /** 最大上下文窗口 token 数 */
@@ -43,18 +20,233 @@ export interface ContextManagerConfig {
   minRecentMessages: number
 }
 
-const DEFAULT_CONFIG: ContextManagerConfig = {
+export interface CompressionResult {
+  /** 压缩后的消息 */
+  messages: Message[]
+  /** 生成的摘要 */
+  summary: string
+  /** 节省的 token 数 */
+  tokensSaved: number
+  /** 压缩前的 token 数 */
+  tokensBefore: number
+  /** 压缩后的 token 数 */
+  tokensAfter: number
+}
+
+export interface CompressorConfig {
+  /** 目标 token 数 (压缩到这个数量以下) */
+  targetTokens: number
+  /** 保留最近的消息数量 */
+  preserveRecent: number
+  /** 是否保留所有系统消息 */
+  preserveSystem: boolean
+  /** 是否保留工具调用结果 */
+  preserveToolResults: boolean
+  /** 摘要的最大长度 (字符) */
+  maxSummaryLength: number
+}
+
+// ── Default configs ──────────────────────────────────────────────────────────
+
+const DEFAULT_MANAGER_CONFIG: ContextManagerConfig = {
   maxContextTokens: 32000,
   systemPromptReserve: 2000,
   toolsReserve: 2000,
   minRecentMessages: 4,
 }
 
+const DEFAULT_COMPRESSOR_CONFIG: CompressorConfig = {
+  targetTokens: 16000,
+  preserveRecent: 6,
+  preserveSystem: true,
+  preserveToolResults: true,
+  maxSummaryLength: 500,
+}
+
+// ── Compression helper functions (internal) ──────────────────────────────────
+
+function extractKeyInfo(msg: Message): string {
+  if (msg.role === 'user') {
+    return msg.content?.slice(0, 100) || ''
+  }
+
+  if (msg.role === 'assistant') {
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+      const tools = msg.tool_calls.map(tc => tc.function.name).join(', ')
+      return `[Used tools: ${tools}]`
+    }
+    return msg.content?.slice(0, 100) || ''
+  }
+
+  if (msg.role === 'tool') {
+    const result = msg.content || ''
+    if (result.startsWith('Error:')) {
+      return `[Tool error: ${result.slice(0, 80)}]`
+    }
+    return `[Tool result: ${result.slice(0, 80)}...]`
+  }
+
+  return ''
+}
+
+function generateSummary(messages: Message[], maxLength: number): string {
+  const keyPoints: string[] = []
+
+  const userMessages = messages.filter(m => m.role === 'user')
+  if (userMessages.length > 0) {
+    const firstUser = userMessages[0].content || ''
+    keyPoints.push(`User asked: ${firstUser.slice(0, 100)}`)
+  }
+
+  const toolCalls = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        toolCalls.add(tc.function.name)
+      }
+    }
+  }
+  if (toolCalls.size > 0) {
+    keyPoints.push(`Tools used: ${Array.from(toolCalls).join(', ')}`)
+  }
+
+  const errors = messages.filter(m =>
+    m.role === 'tool' && m.content?.startsWith('Error:')
+  )
+  if (errors.length > 0) {
+    keyPoints.push(`Errors: ${errors.length} tool errors occurred`)
+  }
+
+  let summary = keyPoints.join('. ')
+  if (summary.length > maxLength) {
+    summary = summary.slice(0, maxLength - 3) + '...'
+  }
+
+  return summary || 'Previous conversation context'
+}
+
+// ── Standalone compressMessages (compatible with old compression.ts API) ─────
+
+/**
+ * 智能压缩消息列表
+ */
+export function compressMessages(
+  messages: Message[],
+  config: Partial<CompressorConfig> = {}
+): CompressionResult {
+  const cfg = { ...DEFAULT_COMPRESSOR_CONFIG, ...config }
+
+  const tokensBefore = estimateTotalTokens(messages)
+
+  if (tokensBefore <= cfg.targetTokens) {
+    return {
+      messages,
+      summary: '',
+      tokensSaved: 0,
+      tokensBefore,
+      tokensAfter: tokensBefore,
+    }
+  }
+
+  const systemMessages = messages.filter(m => m.role === 'system')
+  const recentMessages = messages.slice(-cfg.preserveRecent)
+  const middleMessages = messages.slice(
+    systemMessages.length,
+    messages.length - cfg.preserveRecent
+  )
+
+  const systemTokens = estimateTotalTokens(systemMessages)
+  const recentTokens = estimateTotalTokens(recentMessages)
+  const reservedTokens = systemTokens + recentTokens
+
+  if (reservedTokens >= cfg.targetTokens) {
+    const result = [...systemMessages, ...recentMessages]
+    return {
+      messages: result,
+      summary: generateSummary(middleMessages, cfg.maxSummaryLength),
+      tokensSaved: tokensBefore - reservedTokens,
+      tokensBefore,
+      tokensAfter: reservedTokens,
+    }
+  }
+
+  const middleBudget = cfg.targetTokens - reservedTokens
+
+  const keptMiddle: Message[] = []
+  let usedTokens = 0
+
+  for (let i = middleMessages.length - 1; i >= 0; i--) {
+    const msg = middleMessages[i]
+    const msgTokens = estimateMessageTokens(msg)
+
+    const shouldPreserve = cfg.preserveSystem && msg.role === 'system'
+      || cfg.preserveToolResults && msg.role === 'tool'
+
+    if (shouldPreserve || usedTokens + msgTokens <= middleBudget) {
+      keptMiddle.unshift(msg)
+      usedTokens += msgTokens
+    }
+
+    if (usedTokens >= middleBudget) break
+  }
+
+  const compressedMessages = middleMessages.filter(m => !keptMiddle.includes(m))
+  const summary = generateSummary(compressedMessages, cfg.maxSummaryLength)
+
+  const result: Message[] = [
+    ...systemMessages,
+    ...(compressedMessages.length > 0 ? [{
+      role: 'system' as const,
+      content: `[Context compressed: ${summary}]`,
+    }] : []),
+    ...keptMiddle,
+    ...recentMessages,
+  ]
+
+  const tokensAfter = estimateTotalTokens(result)
+
+  return {
+    messages: result,
+    summary,
+    tokensSaved: tokensBefore - tokensAfter,
+    tokensBefore,
+    tokensAfter,
+  }
+}
+
+/**
+ * 快速压缩 - 使用默认配置
+ */
+export function quickCompress(messages: Message[]): Message[] {
+  return compressMessages(messages).messages
+}
+
+/**
+ * 检查是否需要压缩
+ */
+export function needsCompression(
+  messages: Message[],
+  threshold: number = 0.8,
+  maxTokens: number = 32000
+): boolean {
+  const total = estimateTotalTokens(messages)
+  return total >= maxTokens * threshold
+}
+
+// ── ContextManager class ─────────────────────────────────────────────────────
+
 export class ContextManager {
   private config: ContextManagerConfig
 
-  constructor(config: Partial<ContextManagerConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config }
+  constructor(modelOrConfig?: string | Partial<ContextManagerConfig>) {
+    if (typeof modelOrConfig === 'string') {
+      this.config = {
+        ...DEFAULT_MANAGER_CONFIG,
+        maxContextTokens: getContextWindow(modelOrConfig),
+      }
+    } else {
+      this.config = { ...DEFAULT_MANAGER_CONFIG, ...modelOrConfig }
+    }
   }
 
   /** 可用于历史消息的 token 预算 */
@@ -68,7 +260,7 @@ export class ContextManager {
    */
   truncateMessages(messages: Message[]): Message[] {
     const budget = this.availableTokens
-    const current = totalTokens(messages)
+    const current = estimateTotalTokens(messages)
 
     if (current <= budget) return messages
 
@@ -82,8 +274,8 @@ export class ContextManager {
     const olderMessages = nonSystemMessages.slice(0, -recentCount)
 
     // 计算系统消息 + 最近消息的 token 数
-    const systemTokens = totalTokens(systemMessages)
-    const recentTokens = totalTokens(recentMessages)
+    const systemTokens = estimateTotalTokens(systemMessages)
+    const recentTokens = estimateTotalTokens(recentMessages)
     const reservedTokens = systemTokens + recentTokens
 
     if (reservedTokens >= budget) {
@@ -98,7 +290,7 @@ export class ContextManager {
 
     // 从最新的旧消息开始保留 (滑动窗口)
     for (let i = olderMessages.length - 1; i >= 0; i--) {
-      const msgTokens = messageTokens(olderMessages[i])
+      const msgTokens = estimateMessageTokens(olderMessages[i])
       if (usedTokens + msgTokens > remainingBudget) break
       keptOlder.unshift(olderMessages[i])
       usedTokens += msgTokens
@@ -131,7 +323,7 @@ export class ContextManager {
    */
   isNearLimit(messages: Message[], threshold: number = 0.9): boolean {
     const budget = this.availableTokens
-    const current = totalTokens(messages)
+    const current = estimateTotalTokens(messages)
     return current >= budget * threshold
   }
 
@@ -157,7 +349,7 @@ export class ContextManager {
       parts.push(`${toolCount} tool calls using: ${Array.from(toolNames).join(', ')}`)
     }
 
-    // 提取关键主题 (用户消息的前20字符)
+    // 提取关键主题 (用户消息的前40字符)
     const topics = userMessages
       .map(m => (m.content || '').slice(0, 40).replace(/\n/g, ' '))
       .filter(Boolean)
@@ -175,7 +367,7 @@ export class ContextManager {
    */
   compressMessages(messages: Message[]): Message[] {
     const budget = this.availableTokens
-    const current = totalTokens(messages)
+    const current = estimateTotalTokens(messages)
 
     if (current <= budget * 0.8) return messages
 
@@ -198,6 +390,11 @@ export class ContextManager {
 
     return [...systemMessages, summaryMsg, ...recentMessages]
   }
+
+  /**
+   * 检查是否需要压缩 (静态方法)
+   */
+  static needsCompression = needsCompression
 
   getConfig(): ContextManagerConfig {
     return { ...this.config }

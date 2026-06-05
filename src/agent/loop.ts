@@ -10,7 +10,9 @@ import { AgentEventEmitter } from '../tui/events.js'
 import { CostTracker } from '../cost/tracker.js'
 import { loadHooks, executePreToolHooks, executePostToolHooks } from '../hooks/manager.js'
 import type { HookConfig } from '../hooks/manager.js'
-import fs from 'fs'
+import { MemoryStore } from '../memory/store.js'
+import { logger } from '../utils/logger.js'
+import { getContextWindow } from '../config/models.js'
 
 export interface AgentCallbacks {
   onText: (text: string) => void
@@ -42,7 +44,7 @@ export interface AgentLoopConfig {
 
 const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
   maxIterations: 50,
-  maxContextTokens: 32000,
+  maxContextTokens: getContextWindow('MiMo-7B-RL'),
   maxToolResultChars: 50000,
   maxRetries: 3,
 }
@@ -57,6 +59,7 @@ export class AgentLoop {
   private eventEmitter = new AgentEventEmitter()
   private costTracker: CostTracker
   private hooks: HookConfig[] = []
+  private memoryStore: MemoryStore
 
   constructor(
     config: Partial<MiMoConfig>,
@@ -71,9 +74,12 @@ export class AgentLoop {
       maxContextTokens: this.config.maxContextTokens,
     })
     this.costTracker = new CostTracker(config.model || 'MiMo-7B-RL')
+    this.memoryStore = new MemoryStore()
     
     // 异步加载钩子
     this.loadHooksAsync()
+    // 异步加载记忆
+    this.loadMemory()
   }
 
   private async loadHooksAsync(): Promise<void> {
@@ -81,6 +87,18 @@ export class AgentLoop {
       this.hooks = await loadHooks()
     } catch {
       // 忽略加载错误
+    }
+  }
+
+  private async loadMemory(): Promise<void> {
+    try {
+      await this.memoryStore.init()
+      const context = this.memoryStore.toPromptContext()
+      if (context) {
+        this.systemPrompt = this.systemPrompt + '\n\n' + context
+      }
+    } catch {
+      // 忽略记忆加载错误
     }
   }
 
@@ -112,8 +130,7 @@ export class AgentLoop {
   ): Promise<Message[]> {
     this.resetCancel()
 
-    const _dbg = process.env.DEBUG
-    if (_dbg) fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] sendMessage called, historyLen=${history.length}\n`)
+    logger.debug('sendMessage called', { historyLen: history.length })
 
     const taskId = `task-${Date.now()}`
     this.eventEmitter.emit({ type: 'agent:start', taskId })
@@ -176,14 +193,14 @@ You can continue by sending a new message to continue the task from where it lef
 
         // API 调用带重试
         const events: Array<{ type: string; content?: string; tool_call?: ToolCall; error?: string; usage?: any }> = []
-        if (_dbg) fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] calling streamChat, msgs=${currentMessages.length}, tools=${toolDefs.length}\n`)
+        logger.debug('calling streamChat', { msgs: currentMessages.length, tools: toolDefs.length })
         await withRetry(
           async () => {
             events.length = 0
             for await (const event of this.client.streamChat(currentMessages, toolDefs)) {
               events.push(event)
               if (event.type === 'error') {
-                if (_dbg) fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] error event: ${event.error}\n`)
+                logger.debug('error event', { error: event.error })
                 throw new Error(event.error || 'Stream error')
               }
             }
@@ -193,7 +210,7 @@ You can continue by sending a new message to continue the task from where it lef
             callbacks.onRetry?.(attempt, error, delayMs)
           }
         ).catch((error: Error) => {
-          if (_dbg) fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] caught error: ${error.message}, events=${events.length}\n`)
+          logger.debug('caught error', { message: error.message, eventCount: events.length })
           // 如果重试耗尽仍然失败
           if (events.length === 0) {
             callbacks.onError(error.message || 'Unknown error')

@@ -3,6 +3,7 @@
 import https from 'node:https'
 import OpenAI from 'openai'
 import type { MiMoConfig, Message, StreamEvent } from './types.js'
+import { logger } from '../utils/logger.js'
 
 const DEFAULT_CONFIG: MiMoConfig = {
   apiKey: process.env.MIMO_API_KEY || '',
@@ -10,6 +11,7 @@ const DEFAULT_CONFIG: MiMoConfig = {
   model: process.env.MIMO_MODEL || 'MiMo-7B-RL',
   maxTokens: 4096,
   temperature: 0.7,
+  allowInsecure: false,
 }
 
 export class MiMoClient {
@@ -27,7 +29,7 @@ export class MiMoClient {
     this.client = new OpenAI({
       apiKey: this.config.apiKey,
       baseURL: this.config.baseURL,
-      httpAgent: new https.Agent({ rejectUnauthorized: false }),
+      httpAgent: new https.Agent({ rejectUnauthorized: !this.config.allowInsecure }),
     })
   }
 
@@ -53,10 +55,12 @@ export class MiMoClient {
     this.abortController = new AbortController()
     const effectiveSignal = signal || this.abortController.signal
 
-    if (process.env.DEBUG) {
-      const fs = await import('fs')
-      fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] streamChat called, model=${this.config.model}, baseURL=${this.config.baseURL}, messages=${messages.length}, tools=${tools?.length || 0}\n`)
-    }
+    logger.debug('streamChat called', {
+      model: this.config.model,
+      baseURL: this.config.baseURL,
+      messages: messages.length,
+      tools: tools?.length || 0,
+    })
 
     try {
       const params: OpenAI.ChatCompletionCreateParamsStreaming = {
@@ -71,10 +75,9 @@ export class MiMoClient {
         params.tools = tools
       }
 
-      if (process.env.DEBUG) {
-        const fs = await import('fs')
-        fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] API request params:\n${JSON.stringify(params, (key, val) => key === 'tools' ? `[${val.length} tools]` : val, 2)}\n\n`)
-      }
+      logger.debug('API request params', {
+        params: JSON.parse(JSON.stringify(params, (key, val) => key === 'tools' ? `[${(val as unknown[]).length} tools]` : val)),
+      })
 
       const stream = await this.client.chat.completions.create(params, {
         signal: effectiveSignal,
@@ -150,16 +153,14 @@ export class MiMoClient {
         return
       }
       const detail = error.error?.message || error.body || error.status || ''
-      const debugInfo = process.env.DEBUG
-        ? `\n[DEBUG] status=${error.status} type=${error.error?.type} code=${error.error?.code} param=${error.error?.param}`
-        : ''
-      if (process.env.DEBUG) {
-        const fs = await import('fs')
-        fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] ERROR: ${error.message}\n  status=${error.status} detail=${JSON.stringify(error.error || error.body || '')}\n\n`)
-      }
+      logger.debug('streamChat error', {
+        message: error.message,
+        status: error.status,
+        detail: error.error || error.body || '',
+      })
       yield {
         type: 'error',
-        error: `${error.message}${detail ? ` — ${detail}` : ''}${debugInfo}`,
+        error: `${error.message}${detail ? ` — ${detail}` : ''}`,
       }
     } finally {
       this.abortController = null

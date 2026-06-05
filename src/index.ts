@@ -3,14 +3,10 @@
 // MiMo CLI - 终端 AI 编程助手
 // 类似 Claude Code，接入小米 MiMo 大模型
 
-import fs from 'fs'
-if (process.env.DEBUG) {
-  fs.appendFileSync('mimo-debug.log', `[${new Date().toISOString()}] MiMo CLI started, DEBUG=${process.env.DEBUG}\n`)
-}
-
 import { program } from 'commander'
 import React from 'react'
 import { render } from 'ink'
+import { logger } from './utils/logger.js'
 import { App } from './tui/App.js'
 import { Setup } from './tui/Setup.js'
 import {
@@ -437,6 +433,27 @@ async function checkVoiceTools() {
     console.log('  apt install alsa-utils')
   }
 }
+
+// 全局错误处理
+process.on('uncaughtException', (error: Error) => {
+  logger.error('Uncaught exception', { message: error.message, stack: error.stack })
+  console.error(`\n❌ Uncaught Exception: ${error.message}`)
+  if (process.env.DEBUG) {
+    console.error(error.stack)
+  }
+  process.exit(1)
+})
+
+process.on('unhandledRejection', (reason: unknown) => {
+  const message = reason instanceof Error ? reason.message : String(reason)
+  const stack = reason instanceof Error ? reason.stack : undefined
+  logger.error('Unhandled rejection', { message, stack })
+  console.error(`\n❌ Unhandled Rejection: ${message}`)
+  if (process.env.DEBUG && stack) {
+    console.error(stack)
+  }
+  process.exit(1)
+})
 
 // 解析命令行参数
 program.parse()

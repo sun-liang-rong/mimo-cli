@@ -67,7 +67,7 @@ describe('PluginManager', () => {
       description: 'Test',
       input_schema: {},
       requiresApproval: false,
-      async execute(input) {
+      async execute(input: Record<string, any>) {
         return { success: true, output: `Hello ${input.name}` }
       },
     })

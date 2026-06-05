@@ -1,4 +1,5 @@
 // 成本追踪器 - 监控 token 用量和 API 成本
+import { getModelPricing, getModelConfig } from '../config/models.js'
 
 export interface TokenUsage {
   inputTokens: number
@@ -21,18 +22,6 @@ export interface CostSummary {
   breakdowns: CostBreakdown[]
   requestCount: number
   duration: number
-}
-
-// 模型定价 (每 1M tokens 的价格，单位: USD)
-const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: number }> = {
-  // MiMo 模型定价 (假设，需要根据实际情况调整)
-  'MiMo-7B-RL': { input: 0.5, output: 1.5, cacheRead: 0.1 },
-  'MiMo-7B-Chat': { input: 0.5, output: 1.5, cacheRead: 0.1 },
-  // Claude 模型定价 (参考)
-  'claude-sonnet-4-6': { input: 3.0, output: 15.0, cacheRead: 0.3 },
-  'claude-haiku': { input: 0.25, output: 1.25, cacheRead: 0.03 },
-  // 默认定价
-  default: { input: 1.0, output: 3.0, cacheRead: 0.1 },
 }
 
 export class CostTracker {
@@ -86,7 +75,7 @@ export class CostTracker {
    * 计算成本
    */
   calculateCost(): CostBreakdown {
-    const pricing = MODEL_PRICING[this.model] || MODEL_PRICING.default
+    const pricing = getModelPricing(this.model)
     
     const inputCost = (this.usage.inputTokens / 1_000_000) * pricing.input
     const outputCost = (this.usage.outputTokens / 1_000_000) * pricing.output
@@ -184,6 +173,7 @@ export class CostTracker {
       '💰 Cost Report',
       '─'.repeat(40),
       `Model: ${breakdown.model}`,
+      `Context Window: ${getModelConfig(this.model).contextWindow.toLocaleString()} tokens`,
       `Requests: ${summary.requestCount}`,
       `Duration: ${durationStr}`,
       '',
