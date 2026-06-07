@@ -205,14 +205,44 @@ function parseMarkdown(content: string): React.ReactNode[] {
   return nodes;
 }
 
-// Simple memoization cache to avoid re-parsing on every render
-let lastParsedContent = '';
-let lastParsedNodes: React.ReactNode[] = [];
+// LRU-ish cache: store last N parsed results keyed by content length.
+// During streaming, content grows monotonically — we can often reuse
+// the previous parse if the new content is just an extension.
+const CACHE_SIZE = 5;
+const markdownCache = new Map<number, { content: string; nodes: React.ReactNode[] }>();
+
+function getCachedNodes(content: string): React.ReactNode[] {
+  const len = content.length;
+  const cached = markdownCache.get(len);
+  if (cached && cached.content === content) return cached.nodes;
+
+  // Check if a shorter cached entry is a prefix of current content
+  // (common during streaming — only the tail changed)
+  for (const [cachedLen, entry] of markdownCache) {
+    if (cachedLen < len && content.startsWith(entry.content)) {
+      // Parse only the new suffix and append
+      const suffix = content.slice(cachedLen);
+      const newNodes = [...entry.nodes, ...parseMarkdown(suffix)];
+      markdownCache.set(len, { content, nodes: newNodes });
+      // Evict oldest if cache is full
+      if (markdownCache.size > CACHE_SIZE) {
+        const firstKey = markdownCache.keys().next().value;
+        if (firstKey !== undefined) markdownCache.delete(firstKey);
+      }
+      return newNodes;
+    }
+  }
+
+  const nodes = parseMarkdown(content);
+  markdownCache.set(len, { content, nodes });
+  if (markdownCache.size > CACHE_SIZE) {
+    const firstKey = markdownCache.keys().next().value;
+    if (firstKey !== undefined) markdownCache.delete(firstKey);
+  }
+  return nodes;
+}
 
 export function Markdown({ content }: MarkdownProps) {
-  if (content !== lastParsedContent) {
-    lastParsedContent = content;
-    lastParsedNodes = parseMarkdown(content);
-  }
-  return <Box flexDirection="column">{lastParsedNodes}</Box>;
+  const nodes = getCachedNodes(content);
+  return <Box flexDirection="column">{nodes}</Box>;
 }
