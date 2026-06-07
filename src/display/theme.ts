@@ -1,0 +1,31 @@
+export const theme = {
+  primary: '#00d4aa',
+  secondary: '#6c7a89',
+  accent: '#f39c12',
+  danger: '#e74c3c',
+  success: '#2ecc71',
+  info: '#3498db',
+  muted: '#7f8c8d',
+  border: '#555555',
+  userBg: '#1a3a4a',
+  assistantBg: '#1a2a1a',
+  toolBg: '#2a2a1a',
+  diffAddBg: '#1a3a1a',
+  diffRemoveBg: '#3a1a1a',
+} as const;
+
+export const icons = {
+  file: '📄',
+  command: '🔧',
+  git: '📦',
+  search: '🔍',
+  thinking: '✻',
+  success: '✓',
+  error: '✗',
+  warning: '⚠',
+  info: 'ℹ',
+  arrow: '→',
+  bullet: '•',
+  branch: '⑂',
+  prompt: '❯',
+} as const;

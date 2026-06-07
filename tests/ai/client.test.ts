@@ -6,7 +6,10 @@ jest.mock('../../src/config/settings', () => ({
     baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
     model: 'mimo-v2.5-pro',
     maxTokens: 4096,
-    temperature: 0.7
+    temperature: 0.7,
+    maxContextTokens: 32000,
+    autoApprove: [],
+    historyPath: '',
   })
 }));
 
@@ -24,10 +27,12 @@ describe('MiMoClient', () => {
         baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
         model: 'mimo-v2.5-pro',
         maxTokens: 4096,
-        temperature: 0.7
+        temperature: 0.7,
+        maxContextTokens: 32000,
+        autoApprove: [],
+        historyPath: '',
       })
     }));
-    
     const { MiMoClient: MiMoClient2 } = require('../../src/ai/client');
     expect(() => new MiMoClient2()).toThrow();
   });
