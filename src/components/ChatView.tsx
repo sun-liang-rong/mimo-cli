@@ -41,7 +41,6 @@ export function ChatView() {
   const project = detectProject();
 
   const [messages, setMessages] = useState<MessageType[]>([]);
-  const [renderKey, setRenderKey] = useState(0);
   const messagesRef = useRef<MessageType[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [thinking, setThinking] = useState(false);
@@ -112,9 +111,9 @@ export function ChatView() {
         const msgs = messagesRef.current;
         const idx = msgs.findIndex(m => m.id === msgId);
         if (idx !== -1) {
-          msgs[idx].content = content;
-          msgs[idx].toolCalls = [...toolCalls];
-          setRenderKey(k => k + 1);
+          msgs[idx] = { ...msgs[idx], content, toolCalls: [...toolCalls] };
+          messagesRef.current = [...msgs];
+          setMessages(messagesRef.current);
         }
       });
 
@@ -185,9 +184,14 @@ export function ChatView() {
           const msgs = messagesRef.current;
           const idx = msgs.findIndex(m => m.id === msgId);
           if (idx !== -1) {
-            msgs[idx].content = streamBufferRef.current.getContent() || msgs[idx].content;
-            msgs[idx].toolCalls = [...currentToolCallsRef.current];
-            msgs[idx].isStreaming = false;
+            msgs[idx] = {
+              ...msgs[idx],
+              content: streamBufferRef.current.getContent() || msgs[idx].content,
+              toolCalls: [...currentToolCallsRef.current],
+              isStreaming: false,
+            };
+            messagesRef.current = [...msgs];
+            setMessages(messagesRef.current);
           }
           streamingMsgIdRef.current = '';
         }
